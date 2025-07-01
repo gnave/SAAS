@@ -66,24 +66,24 @@ class MergedLinesTable(tb.IsDescription):
     ritz_wavenumber = tb.Float64Col()
     
 
-fileh = tb.open_file('test.h5', 'w')
-# fileh = tb.open_file('test.h5', 'r')
+# Example of how to create HDF5 file structure with PyTables
+# fileh = tb.open_file('example.h5', 'w')
 
-## Creating main groups in hdf5 file
-levels_group = fileh.create_group(fileh.root, 'levels', 'Levels')
-spectra_group = fileh.create_group(fileh.root, 'spectra', 'Spectra')
-previous_lines_group = fileh.create_group(fileh.root, 'previousLines', 'Previous Lines')
-calculations_group = fileh.create_group(fileh.root, 'calculations', 'Calculations')
-matched_lines_group = fileh.create_group(fileh.root, 'matched_lines', 'Matched Lines')
+## Example of creating main groups in hdf5 file
+# levels_group = fileh.create_group(fileh.root, 'levels', 'Levels')
+# spectra_group = fileh.create_group(fileh.root, 'spectra', 'Spectra')
+# previous_lines_group = fileh.create_group(fileh.root, 'previousLines', 'Previous Lines')
+# calculations_group = fileh.create_group(fileh.root, 'calculations', 'Calculations')
+# matched_lines_group = fileh.create_group(fileh.root, 'matched_lines', 'Matched Lines')
 
-hdr_file = 'test.hdr'
-hdr_file_2 = 'test2.hdr'
-dat_file = 'test.dat'
-dat_file_2 = 'test2.dat'
-lin_file = 'test.cln'
-lev_file = 'test_lev.csv'
-calc_file = 'test_calc.csv'
-prev_file = 'test_prev.csv'
+# hdr_file = 'test.hdr'
+# hdr_file_2 = 'test2.hdr'
+# dat_file = 'test.dat'
+# dat_file_2 = 'test2.dat'
+# lin_file = 'test.cln'
+# lev_file = 'test_lev.csv'
+# calc_file = 'test_calc.csv'
+# prev_file = 'test_prev.csv'
 
 def create_spectrum_table(hdf5file, dat_file, hdr_file):
     from pathlib import Path
@@ -143,7 +143,7 @@ def create_spectrum_table(hdf5file, dat_file, hdr_file):
 
 def create_lin_table(hdf5file, file, group=None):
 
-    with open(lin_file, 'r') as f:
+    with open(file, 'r') as f:
         header = f.readlines(150)
         if 'NO' in header[0]:
             wavenumber_calib = False
@@ -182,7 +182,7 @@ def create_lin_table(hdf5file, file, group=None):
     
 def create_lev_table(hdf5file, file):      
     levels = np.genfromtxt(file, delimiter=',', dtype=None, names=True, autostrip=True, encoding='utf-8', skip_header=3)  # all data with columns headers !may want to specify column datatypes 
-    table = hdf5file.create_table(levels_group, 'levels', EnergyTable, file)  # create table for .dat file    
+    table = hdf5file.create_table('/levels', 'levels', EnergyTable, file)  # create table for .dat file    
     
     with open(file, 'r') as f:   #get and set header attributes
         header = f.readlines()[:3]
@@ -206,7 +206,7 @@ def create_lev_table(hdf5file, file):
         
 def create_calc_table(hdf5file, file):
     lines = np.genfromtxt(file, delimiter=',', dtype=None, names=True, autostrip=True, encoding='utf-8', skip_header=3)  # all data with columns headers !may want to specify column datatypes 
-    table = hdf5file.create_table(calculations_group, 'lines', CalculationTable, file)  # create table for .dat file    
+    table = hdf5file.create_table('/calculations', 'lines', CalculationTable, file)  # create table for .dat file    
     
     with open(file, 'r') as f:   #get and set header attributes
         header = f.readlines()[:3]
@@ -224,7 +224,7 @@ def create_calc_table(hdf5file, file):
     
 def create_prev_idents_table(hdf5file, file):
     lines = np.genfromtxt(file, delimiter=',', dtype=None, names=True, autostrip=True, encoding='utf-8', skip_header=3)  # all data with columns headers !may want to specify column datatypes 
-    table = hdf5file.create_table(previous_lines_group, 'lines', PreviousLinesTable, file)  # create table for .dat file    
+    table = hdf5file.create_table('/previousLines', 'lines', PreviousLinesTable, file)  # create table for .dat file    
     
     with open(file, 'r') as f:   #get and set header attributes
         header = f.readlines()[:3]
@@ -438,7 +438,7 @@ def create_matched_lines_table(hdf5file):
     matched_lines = pd.merge(matched_lines, levels[['desig', 'energy']].rename(columns={'desig':'lower_desig', 'energy': 'lower_energy'}), on='lower_desig', how='left')
     matched_lines['ritz_wavenumber'] = matched_lines['upper_energy'] - matched_lines['lower_energy']
         
-    table = hdf5file.create_table(matched_lines_group, 'lines', MergedLinesTable, 'Matched Lines')
+    table = hdf5file.create_table('/matched_lines', 'lines', MergedLinesTable, 'Matched Lines')
   
     row = table.row
     for i, line in matched_lines.iterrows():  # method needed to iterrate over a DataFrame
@@ -453,13 +453,12 @@ def create_matched_lines_table(hdf5file):
         row.append()
     table.flush() 
 
-                 
-create_spectrum_table(fileh, dat_file, hdr_file)
-create_spectrum_table(fileh, dat_file_2, hdr_file_2)
-create_lin_table(fileh, lin_file)
-create_lev_table(fileh, lev_file)
-create_calc_table(fileh, calc_file)
-create_prev_idents_table(fileh, prev_file)
-create_matched_lines_table(fileh)
-
-fileh.close()
+# Example usage (commented out):
+# create_spectrum_table(fileh, dat_file, hdr_file)
+# create_spectrum_table(fileh, dat_file_2, hdr_file_2)
+# create_lin_table(fileh, lin_file)
+# create_lev_table(fileh, lev_file)
+# create_calc_table(fileh, calc_file)
+# create_prev_idents_table(fileh, prev_file)
+# create_matched_lines_table(fileh)
+# fileh.close()
