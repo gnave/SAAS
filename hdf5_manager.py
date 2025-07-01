@@ -67,6 +67,11 @@ class HDF5Manager:
             self._file = None
             logger.info(f"Closed HDF5 file: {self.filepath}")
     
+    @property
+    def file(self):
+        """Get the HDF5 file handle."""
+        return self._file
+    
     def create_group_structure(self, force: bool = False):
         """
         Create standard group structure for spectroscopy data.

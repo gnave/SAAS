@@ -86,7 +86,25 @@ calc_file = 'test_calc.csv'
 prev_file = 'test_prev.csv'
 
 def create_spectrum_table(hdf5file, dat_file, hdr_file):
-    spectrum_group = hdf5file.create_group(spectra_group, dat_file[:-4], dat_file[:-4])  # create the group for the spectra
+    from pathlib import Path
+    spectrum_name = Path(dat_file).stem  # Get filename without extension for group name
+    
+    # Check if spectrum group already exists
+    try:
+        spectrum_group = hdf5file.get_node(f'/spectra/{spectrum_name}')
+        print(f"Spectrum group '{spectrum_name}' already exists, using existing group")
+    except tb.NoSuchNodeError:
+        # Create new group if it doesn't exist
+        spectrum_group = hdf5file.create_group('/spectra', spectrum_name)  # create the group for the spectra
+    
+    # Check if spectrum table already exists
+    try:
+        table = hdf5file.get_node(spectrum_group, 'spectrum')
+        print(f"Spectrum table for '{spectrum_name}' already exists, replacing...")
+        table._f_remove()  # Remove existing table
+    except tb.NoSuchNodeError:
+        pass  # Table doesn't exist, we'll create it
+    
     table = hdf5file.create_table(spectrum_group, 'spectrum', SpectrumTable, dat_file)  # create table for .dat file
 
     # Set attributes of the .dat table as the parameters of the .hdr file
@@ -141,7 +159,9 @@ def create_lin_table(hdf5file, file, group=None):
             intensity_calib = True  
     
     lines = np.genfromtxt(file, dtype=None, skip_header=3, names=True, autostrip=True, usecols=(0,1,2,3,4,5,8), encoding='utf-8')  # all data with columns headers !may want to specify column datatypes 
-    spectrum_group = hdf5file.get_node(spectra_group, file[:-4]) 
+    from pathlib import Path
+    spectrum_name = Path(file).stem  # Get filename without extension for group name
+    spectrum_group = hdf5file.get_node(f'/spectra/{spectrum_name}') 
     table = hdf5file.create_table(spectrum_group, 'linelist', LinelistTable, file)  # create table for .dat file    
     
     table.attrs.wavenumber_correction = wavenumber_calib
@@ -234,12 +254,26 @@ def create_linelist_table_from_parser(hdf5file, spectrum_name, linelist_file):
     
     # Get the spectrum group (should already exist from create_spectrum_table)
     try:
-        spectrum_group = hdf5file.get_node(spectra_group, spectrum_name)
+        spectrum_group = hdf5file.get_node(f'/spectra/{spectrum_name}')
     except tb.NoSuchNodeError:
         raise ValueError(f"Spectrum group '{spectrum_name}' not found. Create spectrum table first.")
     
-    # Create linelist table
-    table = hdf5file.create_table(spectrum_group, 'linelist', LinelistTable, f"Linelist for {spectrum_name}")
+    # Find next available linelist version
+    version = 1
+    while True:
+        table_name = f'linelist_v{version}' if version > 1 else 'linelist'
+        try:
+            hdf5file.get_node(spectrum_group, table_name)
+            version += 1
+        except tb.NoSuchNodeError:
+            break
+    
+    # Create new versioned linelist table
+    table = hdf5file.create_table(spectrum_group, table_name, LinelistTable, f"Linelist for {spectrum_name} (version {version})")
+    
+    # Update current linelist pointer attribute
+    spectrum_group._v_attrs.current_linelist = table_name
+    print(f"Created linelist table '{table_name}' for spectrum '{spectrum_name}'")
     
     # Store metadata as attributes
     metadata = parsed_data['metadata']
@@ -266,7 +300,8 @@ def create_linelist_table_from_parser(hdf5file, spectrum_name, linelist_file):
 
 def import_spectrum_with_linelist(hdf5file, dat_file, hdr_file, linelist_file=None):
     """Import a spectrum dataset: .dat + .hdr + optional corresponding linelist file"""
-    spectrum_name = dat_file[:-4]  # Remove .dat extension for group name
+    from pathlib import Path
+    spectrum_name = Path(dat_file).stem  # Get filename without extension for group name
     
     # Create spectrum table first
     create_spectrum_table(hdf5file, dat_file, hdr_file)
