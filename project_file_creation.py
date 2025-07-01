@@ -301,21 +301,128 @@ def create_linelist_table_from_parser(hdf5file, spectrum_name, linelist_file):
 def import_spectrum_with_linelist(hdf5file, dat_file, hdr_file, linelist_file=None):
     """Import a spectrum dataset: .dat + .hdr + optional corresponding linelist file"""
     from pathlib import Path
+    import h5py
+    
+    # Check if this is an h5py file or PyTables file
+    if isinstance(hdf5file, h5py.File):
+        return import_spectrum_with_linelist_h5py(hdf5file, dat_file, hdr_file, linelist_file)
+    else:
+        # PyTables version
+        spectrum_name = Path(dat_file).stem  # Get filename without extension for group name
+        
+        # Create spectrum table first
+        create_spectrum_table(hdf5file, dat_file, hdr_file)
+        
+        # Add corresponding linelist if provided
+        if linelist_file is not None:
+            if Path(linelist_file).exists():
+                create_linelist_table_from_parser(hdf5file, spectrum_name, linelist_file)
+                print(f"Imported spectrum dataset with linelist: {spectrum_name}")
+            else:
+                print(f"Warning: Linelist file {linelist_file} not found. Imported spectrum only: {spectrum_name}")
+        else:
+            print(f"Imported spectrum dataset: {spectrum_name}")
+        
+        return spectrum_name
+
+def import_spectrum_with_linelist_h5py(hdf5file, dat_file, hdr_file, linelist_file=None):
+    """Import a spectrum dataset using h5py: .dat + .hdr + optional corresponding linelist file"""
+    from pathlib import Path
+    import numpy as np
+    from file_parsers import FileParserFactory
+    
     spectrum_name = Path(dat_file).stem  # Get filename without extension for group name
     
-    # Create spectrum table first
-    create_spectrum_table(hdf5file, dat_file, hdr_file)
+    # Ensure spectra group exists
+    if 'spectra' not in hdf5file:
+        hdf5file.create_group('spectra')
+    
+    spectra_group = hdf5file['spectra']
+    
+    # Create or get spectrum group
+    if spectrum_name in spectra_group:
+        spectrum_group = spectra_group[spectrum_name]
+        print(f"Spectrum group '{spectrum_name}' already exists, using existing group")
+    else:
+        spectrum_group = spectra_group.create_group(spectrum_name)
+    
+    # Parse and import spectrum data
+    hdr_result = FileParserFactory.parse_file(hdr_file)
+    dat_result = FileParserFactory.parse_file(dat_file, metadata=hdr_result['metadata'])
+    
+    # Store spectrum data
+    if 'spectrum' in spectrum_group:
+        print(f"Spectrum dataset for '{spectrum_name}' already exists, replacing...")
+        del spectrum_group['spectrum']
+    
+    spectrum_ds = spectrum_group.create_dataset('spectrum', data=dat_result['spectrum'])
+    
+    # Store wavenumbers if available
+    if dat_result['wavenumbers'] is not None:
+        if 'wavenumbers' in spectrum_group:
+            del spectrum_group['wavenumbers']
+        spectrum_group.create_dataset('wavenumbers', data=dat_result['wavenumbers'])
+    
+    # Store metadata as attributes
+    metadata = hdr_result['metadata']
+    for key, value in metadata.items():
+        try:
+            spectrum_ds.attrs[key] = value
+        except (TypeError, ValueError):
+            # Skip attributes that can't be stored
+            pass
     
     # Add corresponding linelist if provided
-    if linelist_file is not None:
-        from pathlib import Path
-        if Path(linelist_file).exists():
-            create_linelist_table_from_parser(hdf5file, spectrum_name, linelist_file)
-            print(f"Imported spectrum dataset with linelist: {spectrum_name}")
-        else:
-            print(f"Warning: Linelist file {linelist_file} not found. Imported spectrum only: {spectrum_name}")
+    if linelist_file is not None and Path(linelist_file).exists():
+        # Parse linelist file
+        parsed_data = FileParserFactory.parse_file(linelist_file)
+        
+        # Find next available linelist version
+        version = 1
+        while True:
+            table_name = f'linelist_v{version}' if version > 1 else 'linelist'
+            if table_name not in spectrum_group:
+                break
+            version += 1
+        
+        # Create structured array for linelist data
+        lines = parsed_data['lines']
+        if lines:
+            # Create structured array
+            dtype = [
+                ('line_num', 'i2'),
+                ('wavenumber', 'f8'),
+                ('peak', 'f8'),
+                ('width', 'f8'),
+                ('damping', 'f8'),
+                ('eq_width', 'f8'),
+                ('itn', 'i2'),
+                ('H', 'i2'),
+                ('tags', 'S8')
+            ]
+            
+            linelist_data = np.array([
+                (line['number'], line['wavenumber'], line['peak'], line['width'],
+                 line['dmp'], line['eq_width'], line['itn'], line['H'], line['tags'].encode('utf-8'))
+                for line in lines
+            ], dtype=dtype)
+            
+            linelist_ds = spectrum_group.create_dataset(table_name, data=linelist_data)
+            
+            # Store metadata
+            for i, meta_line in enumerate(parsed_data['metadata']):
+                linelist_ds.attrs[f'metadata_line_{i+1}'] = meta_line
+            
+            # Update current linelist pointer
+            spectrum_group.attrs['current_linelist'] = table_name
+            print(f"Created linelist dataset '{table_name}' for spectrum '{spectrum_name}'")
+        
+        print(f"Imported spectrum dataset with linelist: {spectrum_name}")
     else:
-        print(f"Imported spectrum dataset: {spectrum_name}")
+        if linelist_file:
+            print(f"Warning: Linelist file {linelist_file} not found. Imported spectrum only: {spectrum_name}")
+        else:
+            print(f"Imported spectrum dataset: {spectrum_name}")
     
     return spectrum_name
 
