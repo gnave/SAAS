@@ -68,6 +68,8 @@ class FileImportWorker(QThread):
                             hdr_file = file_info['hdr_file']
                             linelist_file = file_info.get('linelist_file', None)
                             import_spectrum_with_linelist(hdf5_mgr.file, dat_file, hdr_file, linelist_file)
+                        elif data_type == 'linelist':
+                            self._import_standalone_linelist(hdf5_mgr, file_info)
                         elif data_type in ['calculations', 'levels', 'identifications', 'calibration']:
                             self._import_tabular_data(hdf5_mgr, file_info)
                         
@@ -126,6 +128,71 @@ class FileImportWorker(QThread):
             hdf5_mgr.add_identifications(df, dataset_name)
         elif data_type == 'calibration':
             hdf5_mgr.add_calibration(df, dataset_name)
+    
+    def _import_standalone_linelist(self, hdf5_mgr: HDF5Manager, file_info: Dict):
+        """Import standalone linelist file to an existing spectrum."""
+        linelist_file = file_info['path']
+        target_spectrum = file_info['target_spectrum']
+        
+        # Import the linelist using the h5py-compatible function
+        from project_file_creation import import_spectrum_with_linelist_h5py
+        
+        # Create a dummy spectrum entry to use the existing function
+        # We'll only use the linelist part of the import
+        try:
+            # Check if target spectrum exists
+            if 'spectra' not in hdf5_mgr.file or target_spectrum not in hdf5_mgr.file['spectra']:
+                raise ValueError(f"Target spectrum '{target_spectrum}' not found in HDF5 file")
+            
+            # Parse linelist file
+            from file_parsers import FileParserFactory
+            import numpy as np
+            
+            parsed_data = FileParserFactory.parse_file(linelist_file)
+            spectrum_group = hdf5_mgr.file['spectra'][target_spectrum]
+            
+            # Find next available linelist version
+            version = 1
+            while True:
+                table_name = f'linelist_v{version}' if version > 1 else 'linelist'
+                if table_name not in spectrum_group:
+                    break
+                version += 1
+            
+            # Create structured array for linelist data
+            lines = parsed_data['lines']
+            if lines:
+                # Create structured array
+                dtype = [
+                    ('line_num', 'i2'),
+                    ('wavenumber', 'f8'),
+                    ('peak', 'f8'),
+                    ('width', 'f8'),
+                    ('damping', 'f8'),
+                    ('eq_width', 'f8'),
+                    ('itn', 'i2'),
+                    ('H', 'i2'),
+                    ('tags', 'S8')
+                ]
+                
+                linelist_data = np.array([
+                    (line['number'], line['wavenumber'], line['peak'], line['width'],
+                     line['dmp'], line['eq_width'], line['itn'], line['H'], line['tags'].encode('utf-8'))
+                    for line in lines
+                ], dtype=dtype)
+                
+                linelist_ds = spectrum_group.create_dataset(table_name, data=linelist_data)
+                
+                # Store metadata
+                for i, meta_line in enumerate(parsed_data['metadata']):
+                    linelist_ds.attrs[f'metadata_line_{i+1}'] = meta_line
+                
+                # Update current linelist pointer
+                spectrum_group.attrs['current_linelist'] = table_name
+                print(f"Added linelist '{table_name}' to spectrum '{target_spectrum}'")
+            
+        except Exception as e:
+            raise ValueError(f"Failed to import linelist to spectrum '{target_spectrum}': {str(e)}")
 
 
 class FilePreviewWidget(QWidget):
@@ -363,6 +430,10 @@ class ImportWizard(QMainWindow):
         self.add_csv_btn.clicked.connect(self.add_csv_file)
         file_buttons.addWidget(self.add_csv_btn)
         
+        self.add_linelist_btn = QPushButton("Add Linelist to Existing Spectrum")
+        self.add_linelist_btn.clicked.connect(self.add_standalone_linelist)
+        file_buttons.addWidget(self.add_linelist_btn)
+        
         self.remove_file_btn = QPushButton("Remove Selected")
         self.remove_file_btn.clicked.connect(self.remove_selected_file)
         file_buttons.addWidget(self.remove_file_btn)
@@ -398,7 +469,7 @@ class ImportWizard(QMainWindow):
         
         self.data_type_combo = QComboBox()
         self.data_type_combo.addItems([
-            "calculations", "levels", "identifications", "calibration"
+            "calculations", "levels", "identifications", "calibration", "linelist"
         ])
         self.data_type_combo.currentTextChanged.connect(self.on_data_type_changed)
         type_layout.addWidget(QLabel("Type:"))
@@ -410,6 +481,22 @@ class ImportWizard(QMainWindow):
         type_layout.addWidget(self.dataset_name_edit)
         
         config_layout.addWidget(type_group)
+        
+        # Spectrum selector (for linelist files)
+        self.spectrum_selector_group = QGroupBox("Target Spectrum")
+        spectrum_selector_layout = QHBoxLayout(self.spectrum_selector_group)
+        
+        self.spectrum_combo = QComboBox()
+        self.spectrum_combo.setPlaceholderText("Select spectrum for this linelist...")
+        self.refresh_spectra_btn = QPushButton("Refresh")
+        self.refresh_spectra_btn.clicked.connect(self.refresh_spectrum_list)
+        
+        spectrum_selector_layout.addWidget(QLabel("Spectrum:"))
+        spectrum_selector_layout.addWidget(self.spectrum_combo)
+        spectrum_selector_layout.addWidget(self.refresh_spectra_btn)
+        
+        self.spectrum_selector_group.hide()  # Initially hidden
+        config_layout.addWidget(self.spectrum_selector_group)
         
         # Column mapping
         self.column_mapping = ColumnMappingWidget()
@@ -587,6 +674,46 @@ class ImportWizard(QMainWindow):
         
         self.status_bar.showMessage(f"Added CSV file: {Path(filepath).name}")
     
+    def add_standalone_linelist(self):
+        """Add standalone linelist file to be associated with an existing spectrum."""
+        # First, refresh the spectrum list to ensure it's up to date
+        self.refresh_spectrum_list()
+        
+        if self.spectrum_combo.count() == 0:
+            QMessageBox.warning(self, "No Spectra Available", 
+                              "No spectra found in the HDF5 file. Please add spectra first or create an HDF5 file.")
+            return
+        
+        # Select linelist file
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Linelist File", "", 
+            "Linelist Files (*.aln *.lst *.wavcorr *.txt);;All Files (*)"
+        )
+        if not filepath:
+            return
+        
+        # Show spectrum selector dialog
+        spectrum_name, ok = self.select_target_spectrum()
+        if not ok or not spectrum_name:
+            return
+        
+        # Add to list
+        file_info = {
+            'path': filepath,
+            'type': 'linelist',
+            'target_spectrum': spectrum_name,
+            'dataset_name': f"linelist_for_{spectrum_name}"
+        }
+        self.files_to_import.append(file_info)
+        
+        # Add to list widget
+        item_text = f"Linelist: {Path(filepath).name} → {spectrum_name}"
+        list_item = QListWidgetItem(item_text)
+        list_item.setData(Qt.ItemDataRole.UserRole, len(self.files_to_import) - 1)
+        self.file_list.addItem(list_item)
+        
+        self.status_bar.showMessage(f"Added linelist: {Path(filepath).name} for spectrum: {spectrum_name}")
+    
     def remove_selected_file(self):
         """Remove selected file from list."""
         current_item = self.file_list.currentItem()
@@ -608,6 +735,61 @@ class ImportWizard(QMainWindow):
         
         self.status_bar.showMessage("File removed from import list")
     
+    def refresh_spectrum_list(self):
+        """Refresh the list of available spectra from the HDF5 file."""
+        self.spectrum_combo.clear()
+        
+        if not self.hdf5_path or not Path(self.hdf5_path).exists():
+            return
+        
+        try:
+            with HDF5Manager(self.hdf5_path, 'r') as hdf5_mgr:
+                datasets = hdf5_mgr.list_datasets('spectra')
+                spectra_list = datasets.get('spectra', [])
+                
+                if spectra_list:
+                    self.spectrum_combo.addItems(spectra_list)
+                    self.spectrum_combo.setCurrentIndex(-1)  # No selection initially
+                    print(f"Found {len(spectra_list)} spectra: {spectra_list}")
+                else:
+                    print("No spectra found in 'spectra' group")
+                
+        except Exception as e:
+            print(f"Error reading spectra from HDF5 file: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def select_target_spectrum(self):
+        """Show a dialog to select the target spectrum for a linelist."""
+        if self.spectrum_combo.count() == 0:
+            QMessageBox.warning(self, "No Spectra Available", 
+                              "No spectra found in the HDF5 file.")
+            return None, False
+        
+        # Create a simple selection dialog
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QPushButton, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Target Spectrum")
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Select the spectrum to associate this linelist with:"))
+        
+        spectrum_selector = QComboBox()
+        spectrum_selector.addItems([self.spectrum_combo.itemText(i) for i in range(self.spectrum_combo.count())])
+        layout.addWidget(spectrum_selector)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            return spectrum_selector.currentText(), True
+        else:
+            return None, False
+    
     def on_file_selected(self):
         """Handle file selection in list."""
         current_item = self.file_list.currentItem()
@@ -625,18 +807,37 @@ class ImportWizard(QMainWindow):
             self.data_type_combo.setCurrentText(file_info['type'])
             self.dataset_name_edit.setText(file_info.get('dataset_name', ''))
             
-            # Setup column mapping if CSV file
-            try:
-                result = FileParserFactory.parse_file(file_info['path'])
-                columns = result['columns']
-                self.column_mapping.setup_mapping(columns, file_info['type'])
-            except:
-                pass
+            # Handle linelist files specially
+            if file_info['type'] == 'linelist':
+                self.spectrum_selector_group.show()
+                self.refresh_spectrum_list()
+                # Set the target spectrum if already selected
+                target_spectrum = file_info.get('target_spectrum')
+                if target_spectrum:
+                    index = self.spectrum_combo.findText(target_spectrum)
+                    if index >= 0:
+                        self.spectrum_combo.setCurrentIndex(index)
+            else:
+                self.spectrum_selector_group.hide()
+                # Setup column mapping for CSV files (not applicable for linelist)
+                try:
+                    result = FileParserFactory.parse_file(file_info['path'])
+                    columns = result['columns']
+                    self.column_mapping.setup_mapping(columns, file_info['type'])
+                except:
+                    pass
     
     def on_data_type_changed(self):
         """Handle data type change."""
         current_item = self.file_list.currentItem()
         if not current_item:
+            # Show/hide spectrum selector based on type selection
+            new_type = self.data_type_combo.currentText()
+            if new_type == 'linelist':
+                self.spectrum_selector_group.show()
+                self.refresh_spectrum_list()
+            else:
+                self.spectrum_selector_group.hide()
             return
         
         file_index = current_item.data(Qt.ItemDataRole.UserRole)
@@ -646,13 +847,21 @@ class ImportWizard(QMainWindow):
             new_type = self.data_type_combo.currentText()
             file_info['type'] = new_type
             
-            # Update column mapping
-            try:
-                result = FileParserFactory.parse_file(file_info['path'])
-                columns = result['columns']
-                self.column_mapping.setup_mapping(columns, new_type)
-            except:
-                pass
+            # Show/hide spectrum selector for linelist type
+            if new_type == 'linelist':
+                self.spectrum_selector_group.show()
+                self.refresh_spectrum_list()
+            else:
+                self.spectrum_selector_group.hide()
+            
+            # Update column mapping (not applicable for linelist type)
+            if new_type != 'linelist':
+                try:
+                    result = FileParserFactory.parse_file(file_info['path'])
+                    columns = result['columns']
+                    self.column_mapping.setup_mapping(columns, new_type)
+                except:
+                    pass
     
     def start_import(self):
         """Start the import process."""
@@ -727,7 +936,12 @@ class ImportWizard(QMainWindow):
         if file_info['type'] != 'spectrum_pair':
             file_info['type'] = self.data_type_combo.currentText()
             file_info['dataset_name'] = self.dataset_name_edit.text() or None
-            file_info['column_mapping'] = self.column_mapping.get_mapping()
+            
+            # Handle linelist configuration
+            if file_info['type'] == 'linelist':
+                file_info['target_spectrum'] = self.spectrum_combo.currentText()
+            else:
+                file_info['column_mapping'] = self.column_mapping.get_mapping()
     
     def show_about(self):
         """Show about dialog."""

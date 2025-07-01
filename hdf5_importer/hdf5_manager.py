@@ -28,7 +28,7 @@ class HDF5Manager:
         'Levels': 'Energy levels for different ions and states',
         'Standard_lamp_calibrations': 'Calibration certificates and data',
         'Previous_identifications': 'Known spectral line identifications',
-        'Spectra': 'Spectrum data organized by measurement'
+        'spectra': 'Spectrum data organized by measurement'
     }
     
     def __init__(self, filepath: str, mode: str = 'a'):
@@ -98,7 +98,7 @@ class HDF5Manager:
     
     def add_spectrum(self, spectrum_data: np.ndarray, wavenumbers: Optional[np.ndarray] = None,
                     metadata: Optional[Dict[str, Any]] = None, spectrum_name: str = None,
-                    group_path: str = "Spectra") -> str:
+                    group_path: str = "spectra") -> str:
         """
         Add spectrum data to HDF5 file.
         
