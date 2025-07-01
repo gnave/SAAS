@@ -76,15 +76,6 @@ class MergedLinesTable(tb.IsDescription):
 # calculations_group = fileh.create_group(fileh.root, 'calculations', 'Calculations')
 # matched_lines_group = fileh.create_group(fileh.root, 'matched_lines', 'Matched Lines')
 
-# hdr_file = 'test.hdr'
-# hdr_file_2 = 'test2.hdr'
-# dat_file = 'test.dat'
-# dat_file_2 = 'test2.dat'
-# lin_file = 'test.cln'
-# lev_file = 'test_lev.csv'
-# calc_file = 'test_calc.csv'
-# prev_file = 'test_prev.csv'
-
 def create_spectrum_table(hdf5file, dat_file, hdr_file):
     from pathlib import Path
     spectrum_name = Path(dat_file).stem  # Get filename without extension for group name
