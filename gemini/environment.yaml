@@ -1,0 +1,20 @@
+# environment.yaml
+#
+# To install:
+# 1. Create the environment:
+#    conda env create -f environment.yaml
+# 2. Activate the environment:
+#    conda activate spec_env
+
+name: spec_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pyqt=5          # Installs PyQt5 and its necessary Qt5 libraries/plugins
+  - pandas~=2.1
+  - numpy~=1.26
+  - h5py~=3.10
+  - matplotlib~=3.8
+  - pytables~=3.9   # Conda's package name for the 'tables' library
