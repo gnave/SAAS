@@ -1,0 +1,94 @@
+/         FILE PARAMETERS
+inftype = 6                     / Info block type
+id      = 'NSO type 6 FTS data file                                            '
+day     = 'Dec 08, 2000    '/ Acquisition date (Month dd, yyyy)
+serialno= 0                     / Serial number n/a
+wstart  = 1.0                   / First wavenumber / point in file
+wstop   = 56000.000000          / Last wavenumber / point in file
+npo     = 56000                 / Number of points in file
+data_is = 'Real                '/ Data ARE Real or Complex
+delw    = 1.000                 / Dispersion (1/cm / point)
+resolutn= 1.0000                / Spectral resolution (1/cm)
+fboffs  = 0                     / File byte offset
+bocode  = 0                     / Data byte order: 0=little endian; 1=big endian
+xaxis_is= 'Index               '/ Wavenumber, Wavelength, Index, Other
+/
+/         FILE REDUCTION PARAMETERS
+wavcorr = 0.000000E+00          / Fractional wavenumber correction
+rdsclfct= 1.000000E+00          / Read scale factor
+noiselev= 0.000000E+00          / Assumed noise level
+/
+/         OBSERVING PARAMETERS
+ftsmode = 'Lab                 '/ Type of observation
+user    = 'Andreas             '/ Observer
+nscan   = 5                     / Number of co-added scans
+timestr = '17:49:25.00         '/ Starting time (hh:mm:ss)
+eltim   = 59.00                 / Elapsed time for all scans (seconds)
+spectype= 'Emission            '/ Emission or Absorption
+source  = 'D2 BR0065 & none    '/ Source & Input filter
+sample  = 'none                '/ Sample at input
+filter1 = 'none                '/ Optical filter A
+filter2 = 'none                '/ Optical filter B
+input_is= 'A - B               '/ A,B only; A-B; A-B/A+B; A,B separate
+apin    = 1.20                  / Aperture diameter (mm)
+apmax   = 5.98                  / Max. aperture (mm)
+spect   = 'FT700 VUV FTS       '/ Spectrometer
+bmsplt  = 'Calcium Fluoride    '/ Beamsplitter
+dtectrA = 'R7154 /245V         '/ Detector A
+gainA   = '0.000e+00           '/ Channel A gain
+dtectrB = 'R7154 /263V         '/ Detector B
+gainB   = '0.000e+00           '/ Channel B gain
+/
+/         SCAN PARAMETERS
+alias   = 2                     / Alias
+fdr     = 3.5447519394          / Samples per laser fringe (fringe div. ratio)
+nM      = 195369                / M  ( samples per laser fringe ~= M/K )
+nK      = 55115                 / K
+nS      = 0                     / S
+fzeeman = 1.5000E5              / Zeeman frequency (needed by Gremlin)
+drivevel= 6000.0                / Carriage velocity in fringes / sec
+refwavno= 15798.0025            / Laser wavenumber (1/cm)
+fclock  = 4.000000e+07          / Sampling clock frequency (Hz)
+sampfreq= 78125.000000          / Sampling frequency (Hz)
+decim   = 3.673271              / Decimation factor
+/f_type = Gauss                 / Digital filter type
+/adaptive= Yes                  / Velocity adaptive digital filter
+kernlen = 97                    / Digital filter kernel length
+fracbw  = 0.90                  / Digital filter fract. bandwidth
+/epsilon= 0.040000              / Digital filter shape parameter
+ctrav   = 0.500                 / Carriage max. OPD (cm)
+cvel    = 0.37979               / Carriage velocity (cm/sec)
+scan_is = 'Forward             '/ Scan direction
+ratsig  = 0.00                  / Total signal (A+B) (volts)
+ratrms  = 0.00                  / Total RMS (A+B) (volts)
+ratio_is= 'Off                 '/ Ratio - On or Off
+modeff  = 0.00                  / Modulation efficiency (1 = 100%%)
+srverr  = 0.00                  / FTS servo RMS error (millifringes)
+pspect  = 0.000000              / FTS tank pressure (Torr)
+tspect  = 0.00                  / FTS tank temperature (deg C)
+hspect  = 0.000000              / FTS tank H2O pressure (Torr)
+flin    = 500.00                / Input focal length (mm)
+flout   = 0.00                  / Output focal length (mm)
+acqvers = 'Alice 0.104 (2/2000)'/ Acquisition software version
+/
+/         TRANSFORM PARAMETERS
+nint    = 56000                 / Number of pts in interferogram
+inskip  = 0                     / Number of pts skipped on input
+ncenter = 28000                 / Point number of central fringe
+nused   = 0                     / Number of points used in transform
+ntrans  = 65536                 / Transform size (2**N)
+aliaslo = 28000.000000          / Alias low wavenumber (1/cm)
+aliashi = 56000.000000          / Alias high wavenumber (1/cm)
+freespec= 28000.000000          / Free spectral range (1/cm)
+outlo   = 28000.000000          / Saved lowest wavenumber (1/cm)
+outhi   = 56000.000000          / Saved highest wavenumber (1/cm)
+bandlo  = 28000.000000          / Useful lower data bound
+bandhi  = 56000.000000          / Useful upper data bound
+aircorr = 'No                  '/ Air correction flag - Yes or No
+modeapod= 0                     / Apodization function
+apod1   = 0.000000E+00          / Apodization variable #1
+modephzc= 0                     / Phase correction mode
+pvar1   = 0.00000000E+00        / Phase correction variable #1
+archname= 'n/a                 '/ Archive file name
+origtype= 6                     / Original info block type
+END

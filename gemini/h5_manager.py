@@ -1,4 +1,4 @@
-# h5_manager.py (Updated with Delete Functionality)
+# h5_manager.py (Complete, Final Version)
 
 import h5py
 import numpy as np
@@ -17,15 +17,18 @@ HDF5_STRUCTURE = {
 def create_experiment_file(filepath, metadata_dict):
     """Creates a new, structured HDF5 file with predefined schemas."""
     with h5py.File(filepath, 'w') as f:
+        # Create the main top-level groups
         for group_name in HDF5_STRUCTURE:
             f.create_group(group_name)
         
+        # Attach project-level metadata to the root of the file
         for key, value in metadata_dict.items():
             f.attrs[key] = str(value)
         f.attrs['creation_date'] = str(datetime.now())
 
     print(f"Successfully created HDF5 file with standard structure at {filepath}")
     
+    # Define schemas for the project-level groups
     print("Defining default group schemas...")
     define_group_schema(filepath, '/Levels', 
                         ['key', 'energy', 'j_value', 'parity', 'lifetime', 'designation'])
@@ -120,17 +123,9 @@ def attach_metadata_to_dataset(h5_filepath, dataset_path, metadata_dict):
                 dset.attrs[key] = value
     print(f"Successfully attached {len(metadata_dict)} metadata items to '{dataset_path}'.")
 
-# --- NEW FUNCTION ---
 def delete_object(h5_filepath: str, h5_path: str) -> bool:
     """
     Deletes a group or dataset from an HDF5 file.
-    
-    Args:
-        h5_filepath: The path to the HDF5 file.
-        h5_path: The internal path to the object to delete (e.g., '/Spectra/MySpectrum').
-        
-    Returns:
-        True if deletion was successful, False otherwise.
     """
     try:
         with h5py.File(h5_filepath, 'a') as f:

@@ -1,4 +1,4 @@
-# gui.py (Complete, Final Version)
+# gui.py (Definitive Fix for Wavenumber String Conversion Bug)
 
 import sys
 import os
@@ -22,6 +22,7 @@ from matplotlib.figure import Figure
 
 import importers
 import h5_manager
+import analysis
 
 #==============================================================================
 # A model to display a Pandas DataFrame in a QTableView
@@ -302,6 +303,54 @@ class ImportLinelistDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"An error occurred during import:\n{e}")
 
+class ImportCalibratedLinelistDialog(QDialog):
+    def __init__(self, h5_filepath, parent=None):
+        super().__init__(parent)
+        self.h5_filepath = h5_filepath
+        self.setWindowTitle("Import Calibrated Text Linelist")
+        self.setWindowFlags(Qt.Window)
+        self.setMinimumWidth(500)
+        layout = QFormLayout(self)
+        self.spectrum_combo = QComboBox()
+        self._populate_spectrum_combo()
+        self.txt_file_edit = QLineEdit()
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_file)
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(self.txt_file_edit)
+        file_layout.addWidget(browse_btn)
+        layout.addRow("Target Spectrum:", self.spectrum_combo)
+        layout.addRow("Calibrated Linelist File (*.txt):", file_layout)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addRow(button_box)
+    def _populate_spectrum_combo(self):
+        try:
+            with h5py.File(self.h5_filepath, 'r') as f:
+                if '/Spectra' in f:
+                    spectra_names = list(f['/Spectra'].keys())
+                    self.spectrum_combo.addItems(spectra_names)
+        except Exception as e:
+            print(f"Error reading spectra from HDF5 file: {e}")
+    def _browse_file(self):
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select Calibrated Linelist", "", "Text Files (*.txt);;All Files (*)")
+        if filepath:
+            self.txt_file_edit.setText(filepath)
+    def accept(self):
+        txt_file = self.txt_file_edit.text().strip()
+        target_spectrum_name = self.spectrum_combo.currentText()
+        if not txt_file or not target_spectrum_name:
+            QMessageBox.warning(self, "Missing Information", "Please select a target spectrum and a text file.")
+            return
+        target_spectrum_group = f"/Spectra/{target_spectrum_name}"
+        try:
+            importers.import_calibrated_linelist(self.h5_filepath, txt_file, target_spectrum_group)
+            QMessageBox.information(self, "Success", "Calibrated linelist imported successfully.")
+            super().accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"An error occurred during import:\n{e}")
+
 class ImportWizardDialog(QDialog):
     def __init__(self, h5_filepath, parent=None):
         super().__init__(parent)
@@ -375,7 +424,6 @@ class ImportWizardDialog(QDialog):
             self.orig_filename_label.setText(os.path.basename(filepath))
     def _populate_group_combo(self):
         group_paths = h5_manager.get_all_group_paths(self.h5_filepath)
-        # Filter for only the top-level, project-wide table groups
         input_groups = [p for p in group_paths if p in ['/Calculations', '/Levels', '/Previous_Identifications']]
         self.group_combo.addItems(input_groups)
     def _update_ui_state(self):
@@ -419,10 +467,16 @@ class ImportWizardDialog(QDialog):
             ).head(100)
         self.preview_table.setModel(PandasModel(self.df_preview))
         self._on_group_selected()
+
+    # --- THIS METHOD IS MODIFIED ---
     def accept(self):
         table_name = self.table_name_edit.text().strip()
         group_path = self.group_combo.currentText()
         filepath = self.filepath_edit.text()
+        if not all([table_name, group_path, filepath]):
+            QMessageBox.warning(self, "Missing Information", "Please provide all required fields.")
+            return
+
         file_type = 'delimited' if self.delimited_radio.isChecked() else 'fixed'
         delimiter = self.delimiter_combo.currentText().split()[0].lower()
         has_header = self.header_checkbox.isChecked()
@@ -434,18 +488,29 @@ class ImportWizardDialog(QDialog):
             except ValueError:
                 QMessageBox.critical(self, "Error", "Invalid column widths.")
                 return
+        
         full_df = importers.parse_generic_text_file(filepath, file_type, delimiter, has_header, col_widths)
         final_df = pd.DataFrame()
         for i, combo in enumerate(self.mapping_combos):
             col_type = combo.currentText()
             if col_type != "(ignore)":
                 final_df[col_type] = full_df.iloc[:, i]
-        numeric_cols = ['j_value', 'energy', 'parity', 'lifetime']
+        
+        # --- START OF DEFINITIVE FIX ---
+        # Create a comprehensive list of all possible numeric columns from all schemas.
+        numeric_cols = [
+            'j_value', 'energy', 'parity', 'lifetime', 'wavenumber', 'wavelength', 
+            'intensity', 'lower_level_energy', 'upper_level_energy', 'log_gf', 
+            'transition_probability', 'lower_level_j', 'upper_level_j'
+        ]
+        # --- END OF DEFINITIVE FIX ---
+        
         for col in final_df.columns:
             if col in numeric_cols:
                 final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
             else:
                 final_df[col] = final_df[col].astype(str)
+                
         metadata_to_save = {
             'original_filename': self.orig_filename_label.text(),
             'import_date': self.date_edit.text(),
@@ -457,6 +522,89 @@ class ImportWizardDialog(QDialog):
         )
         QMessageBox.information(self, "Success", f"Table '{table_name}' imported successfully.")
         super().accept()
+
+class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
+    def __init__(self, h5_filepath, parent=None):
+        super().__init__(parent)
+        self.h5_filepath = h5_filepath
+        self.setWindowTitle("Run Wavenumber Matching") # Renamed
+        self.setWindowFlags(Qt.Window)
+        self.setMinimumWidth(500)
+
+        layout = QFormLayout(self)
+        
+        self.exp_linelist_combo = QComboBox()
+        self.prev_ids_combo = QComboBox()
+        self._populate_combos()
+        
+        self.tolerance_edit = QLineEdit("0.02")
+        self.output_name_edit = QLineEdit() # NEW field for output name
+
+        layout.addRow("Experimental Linelist:", self.exp_linelist_combo)
+        layout.addRow("Previous Identifications Table:", self.prev_ids_combo)
+        layout.addRow("Tolerance (cm⁻¹):", self.tolerance_edit)
+        layout.addRow("Output Dataset Name:", self.output_name_edit) # NEW
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addRow(button_box)
+        
+        # Connect signal to auto-populate the output name
+        self.exp_linelist_combo.currentIndexChanged.connect(self._suggest_output_name)
+        self._suggest_output_name() # Call it once to populate initially
+    def _populate_combos(self):
+        linelists = []
+        prev_ids = []
+        try:
+            with h5py.File(self.h5_filepath, 'r') as f:
+                if '/Spectra' in f:
+                    for spec_group in f['/Spectra'].values():
+                        if 'Raw_Linelists' in spec_group:
+                            for table_group in spec_group['Raw_Linelists'].values(): linelists.append(table_group['table'].name)
+                        if 'Calibrated_Linelists' in spec_group:
+                            for table_group in spec_group['Calibrated_Linelists'].values(): linelists.append(table_group['table'].name)
+                if '/Previous_Identifications' in f:
+                    for table_group in f['/Previous_Identifications'].values(): prev_ids.append(table_group['table'].name)
+            self.exp_linelist_combo.addItems(linelists)
+            self.prev_ids_combo.addItems(prev_ids)
+        except Exception as e:
+            print(f"Error reading tables from HDF5 file: {e}")
+
+    def _suggest_output_name(self):
+        """Auto-generates a suggested name for the output dataset."""
+        base_name = self.exp_linelist_combo.currentText().split('/')[-2]
+        today = date.today().strftime("%Y%m%d")
+        suggested_name = f"matched_{base_name}_{today}"
+        self.output_name_edit.setText(suggested_name)
+
+
+    def accept(self):
+        exp_path = self.exp_linelist_combo.currentText()
+        ids_path = self.prev_ids_combo.currentText()
+        output_name = self.output_name_edit.text().strip()
+        
+        try:
+            tolerance = float(self.tolerance_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, "Input Error", "Tolerance must be a valid number.")
+            return
+
+        if not all([exp_path, ids_path, output_name]):
+            QMessageBox.warning(self, "Missing Information", "Please select all inputs and provide an output name.")
+            return
+        
+        try:
+            # --- MODIFIED: Call the new wrapper function ---
+            num_matches = analysis.run_and_save_wavenumber_match(
+                self.h5_filepath, exp_path, ids_path, tolerance, output_name
+            )
+            
+            QMessageBox.information(self, "Success", 
+                                    f"Wavenumber matching complete.\nFound and saved {num_matches} matches.")
+            super().accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Analysis Error", f"An error occurred during matching:\n{e}")   
 
 #==============================================================================
 # Main Application Window
@@ -479,6 +627,9 @@ class MainWindow(QMainWindow):
         self.import_lamp_cal_btn = QPushButton("Import Lamp Calib...")
         self.import_table_btn = QPushButton("Import Table...")
         self.import_linelist_btn = QPushButton("Import Raw Linelist (.lin)...")
+        self.import_cal_linelist_btn = QPushButton("Import Calib. Linelist (.txt)...")
+        self.run_match_btn = QPushButton("Run Wavenumber Matching...") # Renamed
+        
         button_layout.addWidget(create_btn)
         button_layout.addWidget(open_btn)
         button_layout.addWidget(self.import_spectrum_btn)
@@ -486,7 +637,9 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.import_lamp_cal_btn)
         button_layout.addWidget(self.import_table_btn)
         button_layout.addWidget(self.import_linelist_btn)
+        button_layout.addWidget(self.import_cal_linelist_btn)
         button_layout.addStretch()
+        button_layout.addWidget(self.run_match_btn) # Renamed
         
         self.file_label = QLabel("No project file loaded.")
         self.file_label.setStyleSheet("font-style: italic; color: grey;")
@@ -534,6 +687,8 @@ class MainWindow(QMainWindow):
         self.import_lamp_cal_btn.clicked.connect(self._show_lamp_cal_import_dialog)
         self.import_table_btn.clicked.connect(self._show_table_import_wizard)
         self.import_linelist_btn.clicked.connect(self._show_linelist_import_dialog)
+        self.import_cal_linelist_btn.clicked.connect(self._show_cal_linelist_import_dialog)
+        self.run_match_btn.clicked.connect(self._show_match_dialog)
         self.tree_view.clicked.connect(self._on_tree_item_selected)
 
     def set_file_loaded_state(self, is_loaded):
@@ -542,6 +697,8 @@ class MainWindow(QMainWindow):
         self.import_lamp_cal_btn.setEnabled(is_loaded)
         self.import_table_btn.setEnabled(is_loaded)
         self.import_linelist_btn.setEnabled(is_loaded)
+        self.import_cal_linelist_btn.setEnabled(is_loaded)
+        self.run_match_btn.setEnabled(is_loaded) # Renamed
 
     def _create_file(self):
         project_dialog = NewProjectDialog(self)
@@ -669,6 +826,18 @@ class MainWindow(QMainWindow):
             dialog = ImportLinelistDialog(self.current_h5_file, self)
             if dialog.exec_():
                 self._populate_tree_view()
+
+    def _show_cal_linelist_import_dialog(self):
+        if self.current_h5_file:
+            dialog = ImportCalibratedLinelistDialog(self.current_h5_file, self)
+            if dialog.exec_():
+                self._populate_tree_view()
+
+    def _show_match_dialog(self):
+        if self.current_h5_file:
+            dialog = WavenumberMatchDialog(self.current_h5_file, self)
+            if dialog.exec_():
+                self._populate_tree_view() # Refresh tree to show new dataset
 
     def _show_tree_context_menu(self, position):
         index = self.tree_view.indexAt(position)
