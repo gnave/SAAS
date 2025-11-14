@@ -12,13 +12,15 @@ from PyQt5.QtWidgets import (
     QTreeView, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMenu
 )
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon
-from PyQt5.QtCore import QAbstractTableModel, Qt
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QDoubleValidator # Added QDoubleValidator
+from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex # Added QModelIndex
 import numpy as np
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+
+from analysis_window import AnalysisWindow # This import is crucial
 
 import importers
 import h5_manager
@@ -49,8 +51,11 @@ class PandasModel(QAbstractTableModel):
         return None
 
 #==============================================================================
-# HELPER FUNCTION: The robust reader.
+# HELPER FUNCTION: The robust reader. (Used by analysis_window now)
 #==============================================================================
+# This function is now also defined in h5_manager for consistency, 
+# and called directly from analysis_window.
+# Keeping it here for compatibility with existing gui.py usage.
 def read_hdf_table_robustly(h5_dataset):
     data = h5_dataset[:]
     df_data = {}
@@ -63,7 +68,7 @@ def read_hdf_table_robustly(h5_dataset):
     return pd.DataFrame(df_data)
 
 #==============================================================================
-# All Dialog Classes
+# All Dialog Classes (No changes needed here unless specifically asked)
 #==============================================================================
 class NewProjectDialog(QDialog):
     def __init__(self, parent=None):
@@ -501,7 +506,8 @@ class ImportWizardDialog(QDialog):
         numeric_cols = [
             'j_value', 'energy', 'parity', 'lifetime', 'wavenumber', 'wavelength', 
             'intensity', 'lower_level_energy', 'upper_level_energy', 'log_gf', 
-            'transition_probability', 'lower_level_j', 'upper_level_j'
+            'transition_probability', 'lower_level_j', 'upper_level_j',
+            'snr', 'epstot', 'epsran' # Added from your .lin file schema
         ]
         # --- END OF DEFINITIVE FIX ---
         
@@ -523,11 +529,11 @@ class ImportWizardDialog(QDialog):
         QMessageBox.information(self, "Success", f"Table '{table_name}' imported successfully.")
         super().accept()
 
-class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
+class WavenumberMatchDialog(QDialog):
     def __init__(self, h5_filepath, parent=None):
         super().__init__(parent)
         self.h5_filepath = h5_filepath
-        self.setWindowTitle("Run Wavenumber Matching") # Renamed
+        self.setWindowTitle("Run Wavenumber Matching")
         self.setWindowFlags(Qt.Window)
         self.setMinimumWidth(500)
 
@@ -538,34 +544,38 @@ class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
         self._populate_combos()
         
         self.tolerance_edit = QLineEdit("0.02")
-        self.output_name_edit = QLineEdit() # NEW field for output name
+        self.tolerance_edit.setValidator(QDoubleValidator(0.0, 10.0, 3, self)) # Allow reasonable range for tolerance
+        self.output_name_edit = QLineEdit()
 
         layout.addRow("Experimental Linelist:", self.exp_linelist_combo)
         layout.addRow("Previous Identifications Table:", self.prev_ids_combo)
         layout.addRow("Tolerance (cm⁻¹):", self.tolerance_edit)
-        layout.addRow("Output Dataset Name:", self.output_name_edit) # NEW
+        layout.addRow("Output Dataset Name:", self.output_name_edit)
         
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         layout.addRow(button_box)
         
-        # Connect signal to auto-populate the output name
         self.exp_linelist_combo.currentIndexChanged.connect(self._suggest_output_name)
-        self._suggest_output_name() # Call it once to populate initially
+        self._suggest_output_name()
     def _populate_combos(self):
         linelists = []
         prev_ids = []
         try:
             with h5py.File(self.h5_filepath, 'r') as f:
                 if '/Spectra' in f:
-                    for spec_group in f['/Spectra'].values():
-                        if 'Raw_Linelists' in spec_group:
-                            for table_group in spec_group['Raw_Linelists'].values(): linelists.append(table_group['table'].name)
-                        if 'Calibrated_Linelists' in spec_group:
-                            for table_group in spec_group['Calibrated_Linelists'].values(): linelists.append(table_group['table'].name)
+                    for spec_group_name in f['/Spectra'].keys():
+                        spec_group_path = f'/Spectra/{spec_group_name}'
+                        if 'Raw_Linelists' in f[spec_group_path]:
+                            for table_group_name in f[f'{spec_group_path}/Raw_Linelists'].keys(): 
+                                linelists.append(f'{spec_group_path}/Raw_Linelists/{table_group_name}/table')
+                        if 'Calibrated_Linelists' in f[spec_group_path]:
+                            for table_group_name in f[f'{spec_group_path}/Calibrated_Linelists'].keys(): 
+                                linelists.append(f'{spec_group_path}/Calibrated_Linelists/{table_group_name}/table')
                 if '/Previous_Identifications' in f:
-                    for table_group in f['/Previous_Identifications'].values(): prev_ids.append(table_group['table'].name)
+                    for table_group_name in f['/Previous_Identifications'].keys(): 
+                        prev_ids.append(f'/Previous_Identifications/{table_group_name}/table')
             self.exp_linelist_combo.addItems(linelists)
             self.prev_ids_combo.addItems(prev_ids)
         except Exception as e:
@@ -573,10 +583,12 @@ class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
 
     def _suggest_output_name(self):
         """Auto-generates a suggested name for the output dataset."""
-        base_name = self.exp_linelist_combo.currentText().split('/')[-2]
-        today = date.today().strftime("%Y%m%d")
-        suggested_name = f"matched_{base_name}_{today}"
-        self.output_name_edit.setText(suggested_name)
+        current_text = self.exp_linelist_combo.currentText()
+        if current_text:
+            base_name = current_text.split('/')[-3] # Get spectrum name from path like /Spectra/NAME/Raw_Linelists/TABLE/table
+            today = date.today().strftime("%Y%m%d")
+            suggested_name = f"matched_{base_name}_{today}"
+            self.output_name_edit.setText(suggested_name)
 
 
     def accept(self):
@@ -595,7 +607,6 @@ class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
             return
         
         try:
-            # --- MODIFIED: Call the new wrapper function ---
             num_matches = analysis.run_and_save_wavenumber_match(
                 self.h5_filepath, exp_path, ids_path, tolerance, output_name
             )
@@ -612,7 +623,7 @@ class WavenumberMatchDialog(QDialog): # Renamed from WavenumberMatchTestDialog
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spectroscopy Data Manager")
+        self.setWindowTitle("SAAS - Spectroscopy Data Manager")
         self.setMinimumSize(900, 700)
         self.current_h5_file = None
         central_widget = QWidget()
@@ -628,7 +639,9 @@ class MainWindow(QMainWindow):
         self.import_table_btn = QPushButton("Import Table...")
         self.import_linelist_btn = QPushButton("Import Raw Linelist (.lin)...")
         self.import_cal_linelist_btn = QPushButton("Import Calib. Linelist (.txt)...")
-        self.run_match_btn = QPushButton("Run Wavenumber Matching...") # Renamed
+        self.run_match_btn = QPushButton("Run Wavenumber Matching...")
+        # NEW: Branching Fraction Analysis button
+        self.run_branching_fraction_analysis_btn = QPushButton("Run Branching Fraction Analysis...")
         
         button_layout.addWidget(create_btn)
         button_layout.addWidget(open_btn)
@@ -638,8 +651,9 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.import_table_btn)
         button_layout.addWidget(self.import_linelist_btn)
         button_layout.addWidget(self.import_cal_linelist_btn)
-        button_layout.addStretch()
-        button_layout.addWidget(self.run_match_btn) # Renamed
+        button_layout.addStretch() # Push import buttons to left
+        button_layout.addWidget(self.run_match_btn)
+        button_layout.addWidget(self.run_branching_fraction_analysis_btn) # Add the new button
         
         self.file_label = QLabel("No project file loaded.")
         self.file_label.setStyleSheet("font-style: italic; color: grey;")
@@ -689,6 +703,9 @@ class MainWindow(QMainWindow):
         self.import_linelist_btn.clicked.connect(self._show_linelist_import_dialog)
         self.import_cal_linelist_btn.clicked.connect(self._show_cal_linelist_import_dialog)
         self.run_match_btn.clicked.connect(self._show_match_dialog)
+        # NEW: Connect the branching fraction analysis button
+        self.run_branching_fraction_analysis_btn.clicked.connect(self._launch_branching_fraction_analysis)
+        
         self.tree_view.clicked.connect(self._on_tree_item_selected)
 
     def set_file_loaded_state(self, is_loaded):
@@ -698,7 +715,9 @@ class MainWindow(QMainWindow):
         self.import_table_btn.setEnabled(is_loaded)
         self.import_linelist_btn.setEnabled(is_loaded)
         self.import_cal_linelist_btn.setEnabled(is_loaded)
-        self.run_match_btn.setEnabled(is_loaded) # Renamed
+        self.run_match_btn.setEnabled(is_loaded)
+        # NEW: Enable/disable the branching fraction analysis button
+        self.run_branching_fraction_analysis_btn.setEnabled(is_loaded)
 
     def _create_file(self):
         project_dialog = NewProjectDialog(self)
@@ -766,8 +785,11 @@ class MainWindow(QMainWindow):
                 self.attr_view.resizeColumnsToContents()
                 
                 if isinstance(h5_object, h5py.Dataset):
-                    if h5_object.parent is not None and 'pandas_type' in h5_object.parent.attrs:
-                        df = read_hdf_table_robustly(h5_object)
+                    # Check if the parent is a group with 'pandas_type' attribute, 
+                    # meaning it's a Pandas table stored in a /group/table structure
+                    if h5_object.parent and 'pandas_type' in h5_object.parent.attrs:
+                        print(self.current_h5_file,h5_path)
+                        df = h5_manager.read_hdf_table_robustly(self.current_h5_file, h5_path) # Use h5_manager's reader
                         self.data_table_view.setModel(PandasModel(df.head(200)))
                         self.data_table_view.show()
                     elif h5_object.ndim == 1:
@@ -838,6 +860,20 @@ class MainWindow(QMainWindow):
             dialog = WavenumberMatchDialog(self.current_h5_file, self)
             if dialog.exec_():
                 self._populate_tree_view() # Refresh tree to show new dataset
+
+    # NEW: Method to launch the interactive branching fraction analysis window
+    def _launch_branching_fraction_analysis(self):
+        """
+        Launches the interactive branching fraction analysis window.
+        """
+        if self.current_h5_file:
+            self.branching_fraction_analysis_window = AnalysisWindow(self.current_h5_file, self)
+            self.branching_fraction_analysis_window.show()
+            # Important: When analysis window closes, refresh the main tree
+            self.branching_fraction_analysis_window.destroyed.connect(self._populate_tree_view)
+        else:
+            QMessageBox.warning(self, "No HDF5 File", "Please open an HDF5 project file first.")
+
 
     def _show_tree_context_menu(self, position):
         index = self.tree_view.indexAt(position)

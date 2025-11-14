@@ -139,3 +139,44 @@ def delete_object(h5_filepath: str, h5_path: str) -> bool:
     except Exception as e:
         print(f"Error deleting object {h5_path}: {e}")
         return False
+    
+def read_hdf_table_robustly(h5_filepath, h5_dataset_path):
+    """
+    Reads an HDF5 dataset as a Pandas DataFrame, robustly handling byte strings.
+    Assumes the dataset contains structured numpy array data.
+    """
+    with h5py.File(h5_filepath, 'r') as f:
+        if h5_dataset_path not in f:
+            raise FileNotFoundError(f"Dataset not found at {h5_dataset_path} in {h5_filepath}")
+        
+        h5_dataset = f[h5_dataset_path]
+        
+        # Check if it's a scalar dataset (not a table)
+        if not isinstance(h5_dataset, h5py.Dataset) or not h5_dataset.dtype.fields:
+             # Handle non-table datasets, e.g., return a single value or error
+             print(f"Warning: Dataset at {h5_dataset_path} is not a structured table. Returning as Series or scalar.")
+             if h5_dataset.shape:
+                 return pd.Series(h5_dataset[:], name=h5_dataset_path.split('/')[-1])
+             else:
+                 return pd.Series([h5_dataset[()]], name=h5_dataset_path.split('/')[-1])
+
+        data = h5_dataset[:]
+    
+        df_data = {}
+        for col_name in data.dtype.names:
+            col_data = data[col_name]
+#            print(col_name,col_data)
+            if np.issubdtype(col_data.dtype, np.bytes_):
+                df_data[col_name] = [s.decode('utf-8') for s in col_data]
+            else:
+                df_data[col_name] = col_data
+        return pd.DataFrame(df_data)
+
+def create_group_if_not_exists(h5_filepath, group_path):
+    """
+    Creates an HDF5 group if it does not already exist.
+    """
+    with h5py.File(h5_filepath, 'a') as f:
+        if group_path not in f:
+            f.create_group(group_path)
+            print(f"Created HDF5 group: {group_path}")
