@@ -1,4 +1,4 @@
-# analysis.py (FINAL PRODUCTION VERSION - Corrected Column Selection & Naming)
+# analysis.py (FINAL with Column Filtering and Grouping)
 
 import pandas as pd
 import numpy as np
@@ -11,8 +11,9 @@ def aggregate_observed_data_for_display(h5_filepath: str,
                                         linelist_paths: list,
                                         tolerance: float = 0.02) -> pd.DataFrame:
     """
-    PRODUCTION VERSION: Aggregates data for display. Starts with previous IDs and merges data 
-    from each selected experimental linelist.
+    PRODUCTION VERSION: Aggregates data for display.
+    - Merges all data as before, but then selects and reorders columns at the end.
+    - Final columns are the 3 base ID cols, followed by grouped Intensity/SNR, then the checkbox.
     """
     if previous_ids_df.empty:
         return pd.DataFrame()
@@ -21,64 +22,64 @@ def aggregate_observed_data_for_display(h5_filepath: str,
 
     if not linelist_paths:
         final_df['Include_in_Fit'] = True
-        return final_df
+    else:
+        for path in linelist_paths:
+            try:
+                spectrum_name = path.split('/')[2]
+                exp_df = h5_manager.read_hdf_table_robustly(h5_filepath, path)
+                exp_df.drop(columns=['index'], inplace=True, errors='ignore')
 
-    for path in linelist_paths:
-        try:
-            spectrum_name = path.split('/')[2]
-            suffix = f"_{spectrum_name}"
+                if 'wavenumber' not in exp_df.columns:
+                    continue
 
-            exp_df = h5_manager.read_hdf_table_robustly(h5_filepath, path)
-            
-            if 'wavenumber' not in exp_df.columns:
-                print(f"Warning: Linelist {path} has no 'wavenumber' column. Skipping.")
-                continue
+                rename_dict = {
+                    'peak': f'SNR_{spectrum_name}',
+                    'eq_width': f'Intensity_{spectrum_name}'
+                }
+                cols_to_keep = ['wavenumber', 'peak', 'eq_width']
+                exp_df_subset = exp_df[[col for col in cols_to_keep if col in exp_df.columns]].copy()
+                exp_df_subset.rename(columns=rename_dict, inplace=True)
 
-            # --- FIX 1 & 2: Select ONLY desired columns and rename them BEFORE merging ---
-            
-            # 1. Define the only columns we want to bring over from the experimental file.
-            desired_cols = ['wavenumber', 'peak', 'eq_width']
-            
-            # 2. Find which of these columns actually exist in the file.
-            cols_to_keep = [col for col in desired_cols if col in exp_df.columns]
-            exp_df_subset = exp_df[cols_to_keep]
-
-            # 3. Create a dictionary to rename the columns with the spectrum suffix.
-            #    (e.g., {'peak': 'peak_Cr110600_001_r', 'eq_width': 'eq_width_Cr110600_001_r'})
-            rename_dict = {
-                col: f"{col}{suffix}" for col in exp_df_subset.columns if col != 'wavenumber'
-            }
-            exp_df_renamed = exp_df_subset.rename(columns=rename_dict)
-
-            # --- END OF FIX ---
-
-            # Ensure merge keys are numeric and sorted
-            final_df['wavenumber'] = pd.to_numeric(final_df['wavenumber'], errors='coerce')
-            exp_df_renamed['wavenumber'] = pd.to_numeric(exp_df_renamed['wavenumber'], errors='coerce')
-            
-            final_df.sort_values('wavenumber', inplace=True)
-            exp_df_renamed.sort_values('wavenumber', inplace=True)
-            
-            # Perform the merge. No 'suffixes' argument is needed now because we pre-renamed the columns.
-            final_df = pd.merge_asof(
-                final_df,
-                exp_df_renamed,
-                on='wavenumber',
-                direction='nearest',
-                tolerance=tolerance
-            )
-        except Exception as e:
-            print(f"Warning: Could not process or merge linelist from {path}: {e}")
+                final_df['wavenumber'] = pd.to_numeric(final_df['wavenumber'], errors='coerce')
+                exp_df_subset['wavenumber'] = pd.to_numeric(exp_df_subset['wavenumber'], errors='coerce')
+                
+                final_df.sort_values('wavenumber', inplace=True)
+                exp_df_subset.sort_values('wavenumber', inplace=True)
+                
+                final_df = pd.merge_asof(
+                    final_df,
+                    exp_df_subset,
+                    on='wavenumber',
+                    direction='nearest',
+                    tolerance=tolerance
+                )
+            except Exception as e:
+                print(f"Warning: Could not process or merge linelist from {path}: {e}")
     
     final_df['Include_in_Fit'] = True
-    # Sort columns to have a more logical order in the table
-    if not final_df.empty:
-        cols = sorted(final_df.columns, key=lambda x: (not x.startswith('wavenumber'), not x.startswith('peak'), not x.startswith('eq_width')))
-        final_df = final_df[cols]
-        
-    return final_df
+    
+    # --- DEFINITIVE FIX for Column Filtering and Grouping ---
+    
+    # 1. Define the mandatory base columns
+    base_cols = ['wavenumber', 'lower_level_key', 'intensity']
+    
+    # 2. Find all the columns that were added from spectra
+    spectrum_cols = [col for col in final_df.columns if col.startswith('Intensity_') or col.startswith('SNR_')]
+    
+    # 3. Sort the spectrum columns to group them by spectrum name, then Intensity/SNR
+    spectrum_cols.sort(key=lambda name: (name.split('_')[1:], name.split('_')[0]))
+
+    # 4. Define the final, explicit column order
+    final_order = base_cols + spectrum_cols + ['Include_in_Fit']
+    
+    # 5. Filter the DataFrame to include only these columns, in this order.
+    #    This also robustly handles cases where a column might be missing.
+    existing_cols_in_order = [col for col in final_order if col in final_df.columns]
+    
+    return final_df[existing_cols_in_order]
 
 
+# --- The rest of the file is unchanged ---
 def match_wavenumbers(experimental_linelist: pd.DataFrame, 
                       previous_ids: pd.DataFrame, 
                       tolerance: float = 0.02) -> pd.DataFrame:
