@@ -404,8 +404,11 @@ class AnalysisWindow(QMainWindow):
             self._populate_line_data_table(selected_level_data['key'])
         else:
             self.line_data_table.setModel(None)
-            
+
+ # In analysis_window.py, replace these three methods:
+
     def _on_line_selected(self):
+        """Triggered when a row is selected in the main line_data_table."""
         selected_indexes = self.line_data_table.selectionModel().selectedRows()
         if not selected_indexes or self.master_line_data_df.empty:
             self._clear_plot()
@@ -416,95 +419,135 @@ class AnalysisWindow(QMainWindow):
         if wavenumber is None: wavenumber = line_data.get('wavenumber')
         is_excluded = not line_data.get('Include_in_Fit', True)
         if wavenumber is not None:
-            selected_spectrum_paths = [p for p in self.data_source_model.get_checked_items() if 'Raw_Data' in p]
-            self._update_plot(wavenumber, selected_spectrum_paths, is_excluded)
+            # --- FIX: Pass ALL checked paths to the plot function ---
+            all_checked_paths = self.data_source_model.get_checked_items()
+            self._update_plot(wavenumber, all_checked_paths, is_excluded)
         else:
             self._clear_plot()
-            
+
     def _on_line_include_changed(self, updated_row_data: pd.Series):
+        """
+        Custom slot connected to LineDataTableModel's include_in_fit_changed signal.
+        Updates the plot if the currently selected row's 'Include_in_Fit' status changed.
+        """
         current_selection_model = self.line_data_table.selectionModel()
         if current_selection_model and current_selection_model.hasSelection():
             selected_row_index = current_selection_model.selectedRows()[0]
-            if self.master_line_data_df.iloc[selected_row_index.row()].equals(updated_row_data):
+            # Use a robust way to check if the updated row is the selected one
+            if self.master_line_data_df.iloc[selected_row_index.row()].name == updated_row_data.name:
                 wavenumber = updated_row_data.get('wavenumber_id')
                 if wavenumber is None: wavenumber = updated_row_data.get('wavenumber')
                 is_excluded = not updated_row_data.get('Include_in_Fit', True)
-                selected_spectrum_paths = [p for p in self.data_source_model.get_checked_items() if 'Raw_Data' in p]
-                self._update_plot(wavenumber, selected_spectrum_paths, is_excluded)
-                
-    def _update_plot(self, target_wavenumber: float, spectrum_paths: list, is_excluded: bool):
-        self._close_extra_plot_windows()
-        self.ax.clear()
+                # --- FIX: Pass ALL checked paths to the plot function ---
+                all_checked_paths = self.data_source_model.get_checked_items()
+                self._update_plot(wavenumber, all_checked_paths, is_excluded)
+
+# In analysis_window.py, replace this method
+
+    def _update_plot(self, target_wavenumber: float, all_checked_paths: list, is_excluded: bool):
+        self.figure.clear()
 
         plot_in_separate_windows = self.separate_plots_checkbox.isChecked()
-        
-        # --- FIX 2: Correctly get the color cycle from rcParams ---
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
         
+        linelist_paths = [p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
+        spectrum_data_paths = [p for p in all_checked_paths if 'Raw_Data' in p]
+        
+        max_fwhm = 0.0
+        tolerance = float(self.tolerance_edit.text())
+
+        for path in linelist_paths:
+            try:
+                linelist_df = h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
+                if 'wavenumber' not in linelist_df.columns or 'width' not in linelist_df.columns:
+                    continue
+                linelist_df['wavenumber'] = pd.to_numeric(linelist_df['wavenumber'], errors='coerce')
+                differences = np.abs(linelist_df['wavenumber'] - target_wavenumber)
+                best_match_index = differences.idxmin()
+                
+                if differences[best_match_index] <= tolerance:
+                    fwhm_for_this_spectrum = linelist_df.loc[best_match_index, 'width']
+                    max_fwhm = max(max_fwhm, fwhm_for_this_spectrum)
+            except Exception as e:
+                print(f"Could not read FWHM ('width') for line {target_wavenumber} in {path}: {e}")
+
+        if max_fwhm > 0:
+            max_fwhm = max_fwhm / 1000.0
+
+        plot_range = (5.0 * max_fwhm) if max_fwhm > 0 else 5.0
+        
         spectrum_data_loaded = False
+        num_plots = len(spectrum_data_paths)
+        
+        # --- START OF CRASH FIX ---
+        # Create subplots using the correct object-oriented method
+        axes = []
+        if plot_in_separate_windows and num_plots > 0:
+            # 1. Create the first subplot. It will be our reference for sharing axes.
+            ax1 = self.figure.add_subplot(1, num_plots, 1)
+            axes.append(ax1)
+            # 2. Create all subsequent subplots, telling them to share the Y-axis with the first one.
+            for i in range(1, num_plots):
+                ax = self.figure.add_subplot(1, num_plots, i + 1, sharey=ax1)
+                axes.append(ax)
+        else:
+            # For overlaid plot, just create one subplot
+            self.ax = self.figure.add_subplot(1, 1, 1)
+            axes = [self.ax]
+        # --- END OF CRASH FIX ---
+        
         vline_plotted_on_main = False
 
-        for i, spec_path in enumerate(spectrum_paths):
+        for i, spec_path in enumerate(spectrum_data_paths):
             try:
                 line_color = 'gray' if is_excluded else color_cycle[i % len(color_cycle)]
                 vline_color = 'gray' if is_excluded else 'red'
-
+                
+                plot_axis = axes[i] if plot_in_separate_windows and num_plots > 0 else axes[0]
+                
                 with h5py.File(self.h5_filepath, 'r') as f:
                     h5_dataset = f[spec_path]
-                    data, attrs = h5_dataset[:], h5_dataset.attrs
-                    parent_group = h5_dataset.parent
-                    wavcorr = parent_group.attrs.get('wavcorr', 0.0)
+                    attrs = h5_dataset.attrs
+                    wavcorr, wstart, delw, rdsclfct = attrs.get('wavcorr', 0.0), attrs.get('wstart', 0.0), attrs.get('delw', 1.0), attrs.get('rdsclfct', 1.0)
+                    data = h5_dataset[:]
                     spectrum_name = spec_path.split('/')[2]
-                    wstart, delw, rdsclfct = attrs.get('wstart', 0.0), attrs.get('delw', 1.0), attrs.get('rdsclfct', 1.0)
-                    
                     y, indices = data * rdsclfct, np.arange(len(data))
                     x = wstart + indices * delw
                     x_corrected = x * (1.0 + wavcorr)
-                    
-                    plot_range = 5
                     mask = (x_corrected >= target_wavenumber - plot_range) & (x_corrected <= target_wavenumber + plot_range)
 
                     if np.any(mask):
-                        plot_axis = self.ax
-                        if plot_in_separate_windows:
-                            popup = PlotPopupDialog(f"Spectrum: {spectrum_name} (around {target_wavenumber:.3f} cm⁻¹)", self)
-                            self.extra_plot_windows.append(popup)
-                            plot_axis = popup.ax
-                            popup.show()
-
-                        label_for_vline = 'Target Line' if (plot_in_separate_windows or not vline_plotted_on_main) else None
-                        
                         plot_axis.plot(x_corrected[mask], y[mask], color=line_color, alpha=0.7, label=spectrum_name)
-                        plot_axis.axvline(target_wavenumber, color=vline_color, linestyle='--', label=label_for_vline)
-                        
-                        if not plot_in_separate_windows: vline_plotted_on_main = True
-
-                        plot_axis.set_title(f"Spectrum around {target_wavenumber:.3f} cm⁻¹")
-                        plot_axis.set_xlabel("Corrected Wavenumber (cm⁻¹)")
-                        plot_axis.set_ylabel("Intensity")
-                        plot_axis.legend()
-                        plot_axis.grid(True)
+                        plot_axis.axvline(target_wavenumber, color=vline_color, linestyle='--')
                         
                         if plot_in_separate_windows:
-                            popup.figure.tight_layout()
-                            popup.canvas.draw()
+                            plot_axis.set_title(spectrum_name)
+                            if i > 0:
+                                plot_axis.set_yticklabels([]) # Hide non-first Y-tick labels
+                        else:
+                            plot_axis.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
+                            plot_axis.legend()
                         
+                        plot_axis.grid(True)
                         spectrum_data_loaded = True
+
             except Exception as e:
                 print(f"Error loading spectrum data for plot from {spec_path}: {e}")
 
-        if not plot_in_separate_windows:
-            if spectrum_data_loaded:
-                self.figure.tight_layout()
-            else:
-                self.ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded",
-                             ha='center', va='center', transform=self.ax.transAxes, fontsize=12, color='darkred')
-            self.canvas.draw()
-        elif spectrum_data_loaded:
-            self.ax.text(0.5, 0.5, "Spectra are displayed in separate windows.",
-                         ha='center', va='center', transform=self.ax.transAxes, fontsize=14, color='gray')
-            self.canvas.draw()
-            
+        if spectrum_data_loaded:
+            self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)') 
+            self.figure.supylabel('Intensity')
+            self.figure.tight_layout()
+        else:
+            if not self.figure.get_axes():
+                self.ax = self.figure.add_subplot(1, 1, 1)
+            self.ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded",
+                         ha='center', va='center', transform=self.ax.transAxes, fontsize=12, color='darkred')
+        
+        self.canvas.draw()
+
+              
+ 
     def _close_extra_plot_windows(self):
         for window in self.extra_plot_windows:
             window.close()
