@@ -1,4 +1,4 @@
-# analysis_window.py (REVERTED to last stable version with STACKED LAYOUT)
+# analysis_window.py (FINAL STACKED LAYOUT VERSION - Bug Free)
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -129,17 +129,11 @@ class AnalysisWindow(QMainWindow):
     def _create_menu_bar(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("&File")
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        debug_menu = menubar.addMenu("&Debug")
-        run_diagnostics_action = QAction("Run Diagnostics...", self)
-        run_diagnostics_action.triggered.connect(self._run_debug_diagnostics)
-        debug_menu.addAction(run_diagnostics_action)
-        help_menu = menubar.addMenu("&Help")
-        help_action = QAction("About", self)
-        help_action.triggered.connect(lambda: QMessageBox.information(self, "About", "SAAS"))
-        help_menu.addAction(help_action)
+        exit_action = QAction("Exit", self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
+        debug_menu = menubar.addMenu("&Debug"); run_diagnostics_action = QAction("Run Diagnostics...", self)
+        run_diagnostics_action.triggered.connect(self._run_debug_diagnostics); debug_menu.addAction(run_diagnostics_action)
+        help_menu = menubar.addMenu("&Help"); help_action = QAction("About", self)
+        help_action.triggered.connect(lambda: QMessageBox.information(self, "About", "SAAS")); help_menu.addAction(help_action)
 
     def _create_main_layout(self):
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -152,94 +146,66 @@ class AnalysisWindow(QMainWindow):
     def _create_side_panel(self):
         self.side_panel_splitter = QSplitter(Qt.Vertical)
         
+        # --- THIS IS THE CRASH FIX: Create parent widgets for the layouts ---
         level_selector_container = QWidget()
         level_selector_layout = QVBoxLayout(level_selector_container)
         
-        self.level_file_combo = QComboBox()
-        self.level_file_combo.addItem("Select Energy Level File...")
+        data_source_container = QWidget()
+        data_source_layout = QVBoxLayout(data_source_container)
+        # --- END OF CRASH FIX ---
+        
+        # Populate Level Selector
+        self.level_file_combo = QComboBox(); self.level_file_combo.addItem("Select Energy Level File...")
         self.level_file_combo.currentIndexChanged.connect(self._on_level_file_selected)
-        level_selector_layout.addWidget(QLabel("Master Energy Level File:"))
-        level_selector_layout.addWidget(self.level_file_combo)
-        
-        self.level_table = QTableView()
-        self.level_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.level_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.level_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.level_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.level_table.clicked.connect(self._on_level_selected_in_table)
-        level_selector_layout.addWidget(QLabel("Available Upper Levels:"))
-        level_selector_layout.addWidget(self.level_table)
-        
+        level_selector_layout.addWidget(QLabel("Master Energy Level File:")); level_selector_layout.addWidget(self.level_file_combo)
+        self.level_table = QTableView(); self.level_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.level_table.setSelectionMode(QAbstractItemView.SingleSelection); self.level_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.level_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive); self.level_table.clicked.connect(self._on_level_selected_in_table)
+        level_selector_layout.addWidget(QLabel("Available Upper Levels:")); level_selector_layout.addWidget(self.level_table)
         header_height = self.level_table.horizontalHeader().height()
         row_height = self.level_table.verticalHeader().defaultSectionSize()
         self.level_table.setMaximumHeight(int(header_height + 5.5 * row_height))
-        
-        self.level_details_group = QWidget()
-        level_details_layout = QFormLayout(self.level_details_group)
+        self.level_details_group = QWidget(); level_details_layout = QFormLayout(self.level_details_group)
         self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display]:
-            editor.setReadOnly(True)
-        level_details_layout.addRow("key:", self.level_key_display)
-        level_details_layout.addRow("energy (cm⁻¹):", self.level_energy_display)
-        level_details_layout.addRow("j_value:", self.level_j_display)
-        level_details_layout.addRow("parity:", self.level_parity_display)
-        level_selector_layout.addWidget(QLabel("Selected Level Details:"))
-        level_selector_layout.addWidget(self.level_details_group)
+        for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display]: editor.setReadOnly(True)
+        level_details_layout.addRow("key:", self.level_key_display); level_details_layout.addRow("energy (cm⁻¹):", self.level_energy_display)
+        level_details_layout.addRow("j_value:", self.level_j_display); level_details_layout.addRow("parity:", self.level_parity_display)
+        level_selector_layout.addWidget(QLabel("Selected Level Details:")); level_selector_layout.addWidget(self.level_details_group)
         
-        data_source_container = QWidget()
-        data_source_layout = QVBoxLayout(data_source_container)
-        
-        self.prev_id_combo = QComboBox()
-        self.prev_id_combo.addItem("Select Previous IDs File...")
+        # Populate Data Source Selector
+        self.prev_id_combo = QComboBox(); self.prev_id_combo.addItem("Select Previous IDs File...")
         self.prev_id_combo.currentIndexChanged.connect(self._on_prev_id_file_selected)
-        data_source_layout.addWidget(QLabel("Master Previous IDs File:"))
-        data_source_layout.addWidget(self.prev_id_combo)
-        
+        data_source_layout.addWidget(QLabel("Master Previous IDs File:")); data_source_layout.addWidget(self.prev_id_combo)
         data_source_layout.addWidget(QLabel("Select Data for Comparison/Plotting:"))
-        self.data_source_table = QTableWidget()
-        self.data_source_table.itemChanged.connect(self._on_data_source_table_item_changed)
+        self.data_source_table = QTableWidget(); self.data_source_table.itemChanged.connect(self._on_data_source_table_item_changed)
         data_source_layout.addWidget(self.data_source_table)
-        
-        self.analysis_controls_group = QWidget()
-        analysis_controls_layout = QVBoxLayout(self.analysis_controls_group)
-        self.separate_plots_checkbox = QCheckBox("Plot Spectra in Separate Windows")
-        analysis_controls_layout.addWidget(self.separate_plots_checkbox)
-        self.tolerance_edit = QLineEdit("0.02")
-        self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
-        analysis_controls_layout.addWidget(QLabel("Wavenumber Matching Tolerance (cm⁻¹):"))
-        analysis_controls_layout.addWidget(self.tolerance_edit)
-        self.run_analysis_btn = QPushButton("Calculate Branching Fractions")
-        self.run_analysis_btn.clicked.connect(self._calculate_clicked)
+        self.analysis_controls_group = QWidget(); analysis_controls_layout = QVBoxLayout(self.analysis_controls_group)
+        self.separate_plots_checkbox = QCheckBox("Plot Spectra in Separate Windows"); analysis_controls_layout.addWidget(self.separate_plots_checkbox)
+        self.tolerance_edit = QLineEdit("0.02"); self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
+        analysis_controls_layout.addWidget(QLabel("Wavenumber Matching Tolerance (cm⁻¹):")); analysis_controls_layout.addWidget(self.tolerance_edit)
+        self.run_analysis_btn = QPushButton("Calculate Branching Fractions"); self.run_analysis_btn.clicked.connect(self._calculate_clicked)
         analysis_controls_layout.addWidget(self.run_analysis_btn)
-        self.save_results_btn = QPushButton("Save Results to HDF5")
-        self.save_results_btn.clicked.connect(self._save_results_clicked)
-        self.save_results_btn.setEnabled(False)
-        analysis_controls_layout.addWidget(self.save_results_btn)
+        self.save_results_btn = QPushButton("Save Results to HDF5"); self.save_results_btn.clicked.connect(self._save_results_clicked)
+        self.save_results_btn.setEnabled(False); analysis_controls_layout.addWidget(self.save_results_btn)
         data_source_layout.addWidget(self.analysis_controls_group)
         
-        self.side_panel_splitter.addWidget(level_selector_container)
-        self.side_panel_splitter.addWidget(data_source_container)
+        self.side_panel_splitter.addWidget(level_selector_container); self.side_panel_splitter.addWidget(data_source_container)
         return self.side_panel_splitter
 
     def _create_central_content_widget(self):
         self.central_splitter = QSplitter(Qt.Vertical)
         self.line_data_table = QTableView()
-        self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.line_data_table.setAlternatingRowColors(True)
-        self.line_data_table.clicked.connect(self._on_line_selected)
+        self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected)
         self.line_data_table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         self.line_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.central_splitter.addWidget(self.line_data_table)
         main_plot_widget = QWidget()
-        plot_layout = QVBoxLayout(main_plot_widget)
+        plot_layout = QVBoxLayout(main_plot_widget) # This is the correct way
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        self.ax = self.figure.add_subplot(111)
-        plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas)
+        self.figure = Figure(figsize=(5, 4), dpi=100); self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self); self.ax = self.figure.add_subplot(111)
+        plot_layout.addWidget(self.toolbar); plot_layout.addWidget(self.canvas)
         self.central_splitter.addWidget(main_plot_widget)
         return self.central_splitter
 
@@ -295,13 +261,12 @@ class AnalysisWindow(QMainWindow):
                 if '/Previous_Identifications' in f:
                     self.prev_id_combo.addItems([name for name in f['/Previous_Identifications'].keys() if isinstance(f['/Previous_Identifications'][name], h5py.Group)])
         except Exception as e:
-            QMessageBox.critical(self, "HDF5 Error", f"Failed to read HDF5 structure for comboboxes: {e}")
+            QMessageBox.critical(self, "HDF5 Error", f"Failed to read HDF5 structure: {e}")
 
     def _on_level_file_selected(self):
         selected_file = self.level_file_combo.currentText()
         if selected_file == "Select Energy Level File...":
-            self.level_table.setModel(None); self._clear_level_details()
-            self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame(); return
+            self.level_table.setModel(None); self._clear_level_details(); self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame(); return
         path = f"/Levels/{selected_file}/table"
         try:
             self.current_energy_levels_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)

@@ -18,11 +18,10 @@ def aggregate_observed_data_for_display(h5_filepath: str,
     if previous_ids_df.empty:
         return pd.DataFrame()
 
+    # Start with all columns to ensure data is available for merging and internal logic
     final_df = previous_ids_df.copy()
 
-    if not linelist_paths:
-        final_df['Include_in_Fit'] = True
-    else:
+    if linelist_paths:
         for path in linelist_paths:
             try:
                 spectrum_name = path.split('/')[2]
@@ -60,20 +59,25 @@ def aggregate_observed_data_for_display(h5_filepath: str,
     
     # --- DEFINITIVE FIX for Column Filtering and Grouping ---
     
-    # 1. Define the mandatory base columns
+    # 1. Define the mandatory base columns in the desired order
     base_cols = ['wavenumber', 'lower_level_key', 'intensity']
     
     # 2. Find all the columns that were added from spectra
     spectrum_cols = [col for col in final_df.columns if col.startswith('Intensity_') or col.startswith('SNR_')]
     
-    # 3. Sort the spectrum columns to group them by spectrum name, then Intensity/SNR
-    spectrum_cols.sort(key=lambda name: (name.split('_')[1:], name.split('_')[0]))
-
-    # 4. Define the final, explicit column order
+    # 3. Sort the spectrum columns to group them by spectrum name first, then by Intensity/SNR
+    def sort_key(column_name):
+        parts = column_name.split('_')
+        # Sort key is (spectrum_name, column_type)
+        return (parts[1], parts[0])
+        
+    spectrum_cols.sort(key=sort_key)
+    
+    # 4. Define the final, explicit column order for the new DataFrame
     final_order = base_cols + spectrum_cols + ['Include_in_Fit']
     
     # 5. Filter the DataFrame to include only these columns, in this order.
-    #    This also robustly handles cases where a column might be missing.
+    #    This also robustly handles cases where a column might be missing from the source.
     existing_cols_in_order = [col for col in final_order if col in final_df.columns]
     
     return final_df[existing_cols_in_order]
@@ -83,6 +87,7 @@ def aggregate_observed_data_for_display(h5_filepath: str,
 def match_wavenumbers(experimental_linelist: pd.DataFrame, 
                       previous_ids: pd.DataFrame, 
                       tolerance: float = 0.02) -> pd.DataFrame:
+    # ... (code is the same)
     if experimental_linelist.empty or previous_ids.empty: return pd.DataFrame()
     if 'wavenumber' not in experimental_linelist.columns or 'wavenumber' not in previous_ids.columns:
         raise ValueError("Both input DataFrames must contain a 'wavenumber' column.")
@@ -109,6 +114,7 @@ def match_wavenumbers(experimental_linelist: pd.DataFrame,
     return matched_df
 
 def run_and_save_wavenumber_match(h5_filepath, exp_path, ids_path, tolerance, output_name):
+    # ... (code is the same)
     exp_df = h5_manager.read_hdf_table_robustly(h5_filepath, exp_path)
     ids_df = h5_manager.read_hdf_table_robustly(h5_filepath, ids_path)
     target_spectrum_group = '/'.join(exp_path.split('/')[:3])
@@ -130,6 +136,7 @@ def run_and_save_wavenumber_match(h5_filepath, exp_path, ids_path, tolerance, ou
 def calculate_branching_fractions(lines_for_calculation: pd.DataFrame, 
                                   upper_level_key: str,
                                   energy_levels_df: pd.DataFrame) -> pd.DataFrame:
+    # ... (code is the same)
     if lines_for_calculation.empty: return pd.DataFrame()
     return pd.DataFrame({
         'upper_level_key': [upper_level_key],
