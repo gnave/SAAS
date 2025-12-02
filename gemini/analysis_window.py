@@ -328,6 +328,7 @@ class AnalysisWindow(QMainWindow):
                 self.line_data_table.setModel(None); self._clear_plot(); return
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
+            self.line_data_table.horizontalHeader().setFixedHeight(40)
             model.include_in_fit_changed.connect(self._on_line_include_changed)
             self._clear_plot()
             current_height = self.central_splitter.height()
