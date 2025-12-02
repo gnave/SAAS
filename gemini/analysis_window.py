@@ -1,13 +1,13 @@
-# analysis_window.py (FINAL STACKED LAYOUT VERSION - Bug Free)
+# analysis_window.py (UPDATED: SNR and Intensity display as integers)
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableView, QTreeView, QSplitter, QDockWidget, QPushButton, QLineEdit,
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
-    QTableWidget, QTableWidgetItem
+    QTableWidget, QTableWidgetItem, QMenu
 )
-from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal
+from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel
 from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush
 
 import pandas as pd
@@ -23,8 +23,8 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
-import h5_manager 
-import analysis 
+import h5_manager
+import analysis
 
 class PandasTableModel(QAbstractTableModel):
     def __init__(self, data: pd.DataFrame, parent=None):
@@ -47,7 +47,7 @@ class PandasTableModel(QAbstractTableModel):
         return None
 
 class LineDataTableModel(PandasTableModel):
-    include_in_fit_changed = pyqtSignal(pd.Series) 
+    include_in_fit_changed = pyqtSignal(pd.Series)
     def __init__(self, data: pd.DataFrame, parent=None):
         if 'Include_in_Fit' not in data.columns:
             data['Include_in_Fit'] = True
@@ -56,19 +56,30 @@ class LineDataTableModel(PandasTableModel):
             self.include_col_index = self.df.columns.get_loc('Include_in_Fit')
         except KeyError:
             self.include_col_index = -1
+
+    # --- MODIFICATION START ---
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid(): return None
-        if index.column() == self.include_col_index:
-            if role == Qt.CheckStateRole:
-                return Qt.Checked if self.df.iloc[index.row(), index.column()] else Qt.Unchecked
-            elif role == Qt.DisplayRole: return None
-            elif role == Qt.ForegroundRole:
-                if not self.df.iloc[index.row(), self.include_col_index]: return QColor(Qt.gray)
-        else:
+        if role == Qt.CheckStateRole and index.column() == self.include_col_index:
+            return Qt.Checked if self.df.iloc[index.row(), self.include_col_index] else Qt.Unchecked
+        if role == Qt.ForegroundRole:
             if self.include_col_index != -1 and not self.df.iloc[index.row(), self.include_col_index]:
-                 if role == Qt.ForegroundRole: return QColor(Qt.gray)
-            return super().data(index, role)
+                return QColor(Qt.gray)
+        if role == Qt.DisplayRole:
+            if index.column() == self.include_col_index: return None
+            value = self.df.iloc[index.row(), index.column()]
+            col_name = str(self.df.columns[index.column()])
+            if isinstance(value, (float, np.floating)):
+                if pd.isna(value): return ""
+                # Custom formatting for specific columns
+                if '\nSNR' in col_name or '\nIntensity' in col_name:
+                    return f"{int(round(value))}" # Display as integer
+                # Default formatting for other floats
+                return f"{value:.4f}"
+            return str(value)
         return None
+    # --- MODIFICATION END ---
+
     def setData(self, index: QModelIndex, value, role=Qt.EditRole):
         if not index.isValid(): return False
         if index.column() == self.include_col_index and role == Qt.CheckStateRole:
@@ -76,9 +87,10 @@ class LineDataTableModel(PandasTableModel):
             if self.df.iloc[index.row(), index.column()] != new_value:
                 self.df.iloc[index.row(), index.column()] = new_value
                 self.dataChanged.emit(index, index, [Qt.CheckStateRole, Qt.ForegroundRole])
-                self.include_in_fit_changed.emit(self.df.iloc[index.row()]) 
+                self.include_in_fit_changed.emit(self.df.iloc[index.row()])
                 return True
         return False
+        
     def flags(self, index: QModelIndex):
         if not index.isValid(): return Qt.NoItemFlags
         base_flags = super().flags(index)
@@ -106,8 +118,8 @@ class AnalysisWindow(QMainWindow):
         self.setGeometry(100, 100, 1400, 800)
         self.extra_plot_windows = []
         self.h5_filepath = h5_filepath
-        self.h5_manager = h5_manager 
-        self.analysis_module = analysis 
+        self.h5_manager = h5_manager
+        self.analysis_module = analysis
         self.current_energy_levels_df = pd.DataFrame()
         self.current_previous_ids_df = pd.DataFrame()
         self.filtered_levels_df = pd.DataFrame()
@@ -146,13 +158,11 @@ class AnalysisWindow(QMainWindow):
     def _create_side_panel(self):
         self.side_panel_splitter = QSplitter(Qt.Vertical)
         
-        # --- THIS IS THE CRASH FIX: Create parent widgets for the layouts ---
         level_selector_container = QWidget()
         level_selector_layout = QVBoxLayout(level_selector_container)
         
         data_source_container = QWidget()
         data_source_layout = QVBoxLayout(data_source_container)
-        # --- END OF CRASH FIX ---
         
         # Populate Level Selector
         self.level_file_combo = QComboBox(); self.level_file_combo.addItem("Select Energy Level File...")
@@ -166,10 +176,11 @@ class AnalysisWindow(QMainWindow):
         row_height = self.level_table.verticalHeader().defaultSectionSize()
         self.level_table.setMaximumHeight(int(header_height + 5.5 * row_height))
         self.level_details_group = QWidget(); level_details_layout = QFormLayout(self.level_details_group)
-        self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display]: editor.setReadOnly(True)
+        self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
+        for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display]: editor.setReadOnly(True)
         level_details_layout.addRow("key:", self.level_key_display); level_details_layout.addRow("energy (cm⁻¹):", self.level_energy_display)
         level_details_layout.addRow("j_value:", self.level_j_display); level_details_layout.addRow("parity:", self.level_parity_display)
+        level_details_layout.addRow("lifetime (ns):", self.level_lifetime_display)
         level_selector_layout.addWidget(QLabel("Selected Level Details:")); level_selector_layout.addWidget(self.level_details_group)
         
         # Populate Data Source Selector
@@ -199,15 +210,54 @@ class AnalysisWindow(QMainWindow):
         self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected)
         self.line_data_table.setEditTriggers(QAbstractItemView.AllEditTriggers)
         self.line_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
         self.central_splitter.addWidget(self.line_data_table)
         main_plot_widget = QWidget()
-        plot_layout = QVBoxLayout(main_plot_widget) # This is the correct way
+        plot_layout = QVBoxLayout(main_plot_widget)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         self.figure = Figure(figsize=(5, 4), dpi=100); self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self); self.ax = self.figure.add_subplot(111)
         plot_layout.addWidget(self.toolbar); plot_layout.addWidget(self.canvas)
         self.central_splitter.addWidget(main_plot_widget)
         return self.central_splitter
+
+    def _show_line_table_context_menu(self, position):
+        index = self.line_data_table.indexAt(position)
+        if not index.isValid():
+            return
+        menu = QMenu()
+        normalize_action = menu.addAction("Set as Intensity Reference (Normalize to 1000)")
+        action = menu.exec_(self.line_data_table.viewport().mapToGlobal(position))
+        if action == normalize_action:
+            self._normalize_intensities(index.row())
+
+    def _normalize_intensities(self, reference_line_row: int):
+        if self.master_line_data_df.empty:
+            QMessageBox.warning(self, "Normalization Error", "No data loaded to normalize.")
+            return
+        try:
+            normalized_df = self.analysis_module.normalize_intensities_by_reference_line(
+                self.master_line_data_df,
+                reference_line_row
+            )
+            self.master_line_data_df = normalized_df
+            model = LineDataTableModel(self.master_line_data_df)
+            model.include_in_fit_changed.connect(self._on_line_include_changed)
+            self.line_data_table.setModel(model)
+            
+            new_index_to_select = model.index(reference_line_row, 0)
+            if new_index_to_select.isValid():
+                self.line_data_table.setCurrentIndex(new_index_to_select)
+                selection_model = self.line_data_table.selectionModel()
+                selection_model.select(new_index_to_select, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                self._on_line_selected(new_index_to_select)
+
+            ref_level_key = self.master_line_data_df.iloc[reference_line_row].get('lower_level_key', 'Unknown')
+            QMessageBox.information(self, "Success", 
+                                    f"Intensities have been normalized using the line for lower level '{ref_level_key}' as the reference.")
+        except Exception as e:
+            QMessageBox.critical(self, "Normalization Error", f"An error occurred during normalization:\n{e}")
 
     def _populate_data_source_table(self):
         try:
@@ -305,8 +355,11 @@ class AnalysisWindow(QMainWindow):
             self._clear_level_details(); self.line_data_table.setModel(None); self._clear_plot(); return
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
-        self.level_key_display.setText(str(selected_level_data.get('key', 'N/A'))); self.level_energy_display.setText(f"{selected_level_data.get('energy', 0.0):.3f}")
-        self.level_j_display.setText(str(selected_level_data.get('j_value', 'N/A'))); self.level_parity_display.setText(str(selected_level_data.get('parity', 'N/A')))
+        self.level_key_display.setText(str(selected_level_data.get('key', 'N/A')))
+        self.level_energy_display.setText(f"{selected_level_data.get('energy', 0.0):.3f}")
+        self.level_j_display.setText(str(selected_level_data.get('j_value', 'N/A')))
+        self.level_parity_display.setText(str(selected_level_data.get('parity', 'N/A')))
+        self.level_lifetime_display.setText(f"{selected_level_data.get('lifetime', 0.0):.3f}")
         self._populate_line_data_table(selected_level_data['key'])
         
     def _populate_line_data_table(self, upper_level_key: str):
@@ -338,7 +391,7 @@ class AnalysisWindow(QMainWindow):
             self.line_data_table.setModel(None); self._clear_plot()
             
     def _clear_level_details(self):
-        self.level_key_display.clear(); self.level_energy_display.clear(); self.level_j_display.clear(); self.level_parity_display.clear()
+        self.level_key_display.clear(); self.level_energy_display.clear(); self.level_j_display.clear(); self.level_parity_display.clear(); self.level_lifetime_display.clear()
         
     def _on_data_source_table_item_changed(self, item):
         if self.level_table.selectionModel() and self.level_table.selectionModel().hasSelection():
@@ -349,11 +402,12 @@ class AnalysisWindow(QMainWindow):
         else:
             self.line_data_table.setModel(None)
             
-    def _on_line_selected(self):
-        selected_indexes = self.line_data_table.selectionModel().selectedRows()
-        if not selected_indexes or self.master_line_data_df.empty:
-            self._clear_plot(); return
-        row = selected_indexes[0].row()
+    def _on_line_selected(self, index: QModelIndex):
+        if not index.isValid() or self.master_line_data_df.empty:
+            self._clear_plot()
+            return
+
+        row = index.row()
         line_data = self.master_line_data_df.iloc[row]
         wavenumber = line_data.get('wavenumber')
         is_excluded = not line_data.get('Include_in_Fit', True)
@@ -435,7 +489,7 @@ class AnalysisWindow(QMainWindow):
             except Exception as e:
                 print(f"Error loading spectrum data for plot from {spec_path}: {e}")
         if spectrum_data_loaded:
-            self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)') 
+            self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)')
             self.figure.supylabel('Intensity')
             self.figure.tight_layout()
         else:
@@ -494,7 +548,7 @@ class AnalysisWindow(QMainWindow):
             }
             try:
                 self.h5_manager.add_pandas_table(
-                    self.h5_filepath, '/Calculated_Branching_Fractions', results_name, 
+                    self.h5_filepath, '/Calculated_Branching_Fractions', results_name,
                     self.result_df, metadata_dict=metadata_to_save
                 )
                 QMessageBox.information(self, "Save Complete", f"Results saved to HDF5 at: /Calculated_Branching_Fractions/{results_name}")
