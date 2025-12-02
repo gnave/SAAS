@@ -1,4 +1,4 @@
-# analysis.py (FINAL with CORRECT newline header logic and ADDED normalization)
+# analysis.py (MODIFIED to remove 'Include in Fit')
 
 import pandas as pd
 import numpy as np
@@ -12,6 +12,7 @@ def aggregate_observed_data_for_display(h5_filepath: str,
                                         tolerance: float = 0.02) -> pd.DataFrame:
     """
     PRODUCTION VERSION: Aggregates data and creates newline-separated column headers.
+    'Include_in_Fit' column has been removed.
     """
     if previous_ids_df.empty:
         return pd.DataFrame()
@@ -28,7 +29,6 @@ def aggregate_observed_data_for_display(h5_filepath: str,
                 if 'wavenumber' not in exp_df.columns:
                     continue
 
-                # --- FIX 1: Rename columns with Spectrum Name on TOP ---
                 rename_dict = {
                     'peak': f'{spectrum_name}\nSNR',
                     'eq_width': f'{spectrum_name}\nIntensity'
@@ -53,19 +53,14 @@ def aggregate_observed_data_for_display(h5_filepath: str,
             except Exception as e:
                 print(f"Warning: Could not process or merge linelist from {path}: {e}")
 
-    final_df['Include_in_Fit'] = True
+    # --- MODIFICATION: 'Include_in_Fit' column is no longer added ---
 
-    # Define the mandatory base columns
     base_cols = ['wavenumber', 'lower_level_key', 'intensity']
-
-    # --- FIX 2: Correctly find all columns that contain a newline ---
     spectrum_cols = [col for col in final_df.columns if '\n' in str(col)]
-
-    # --- FIX 3: Correctly sort by spectrum name (top line) then type (bottom line) ---
     spectrum_cols.sort(key=lambda name: (name.split('\n')[0], name.split('\n')[1]))
 
-    final_order = base_cols + spectrum_cols + ['Include_in_Fit']
-
+    # --- MODIFICATION: 'Include_in_Fit' removed from the final order ---
+    final_order = base_cols + spectrum_cols
     existing_cols_in_order = [col for col in final_order if col in final_df.columns]
 
     return final_df[existing_cols_in_order]
@@ -133,7 +128,6 @@ def calculate_branching_fractions(lines_for_calculation: pd.DataFrame,
         'num_lines_included': [len(lines_for_calculation)]
     })
 
-# --- MODIFICATION START ---
 def normalize_intensities_by_reference_line(
     master_df: pd.DataFrame,
     reference_line_index: int
@@ -167,4 +161,3 @@ def normalize_intensities_by_reference_line(
                   f"Skipping normalization for this spectrum.")
             
     return normalized_df
-# --- MODIFICATION END ---
