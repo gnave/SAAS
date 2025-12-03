@@ -1,4 +1,4 @@
-# analysis_window.py (MODIFIED to display fractional uncertainty as a percentage)
+# analysis_window.py (MODIFIED to show and save results)
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -46,6 +46,29 @@ class PandasTableModel(QAbstractTableModel):
             if orientation == Qt.Vertical: return str(self.df.index[section])
         return None
 
+# --- MODIFICATION START ---
+class ResultsDisplayDialog(QDialog):
+    """A dialog to display a pandas DataFrame in a QTableView."""
+    def __init__(self, df, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Calculation Results")
+        self.setMinimumSize(800, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        self.table_view = QTableView()
+        self.table_view.setModel(PandasTableModel(df))
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        
+        layout.addWidget(QLabel("Branching Fraction Calculation Results:"))
+        layout.addWidget(self.table_view)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
+
+# --- MODIFICATION END ---
+
 class LineDataTableModel(PandasTableModel):
     def __init__(self, data: pd.DataFrame, parent=None):
         super().__init__(data, parent)
@@ -53,26 +76,16 @@ class LineDataTableModel(PandasTableModel):
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid() or role != Qt.DisplayRole:
             return None
-
         value = self.df.iloc[index.row(), index.column()]
         col_name = str(self.df.columns[index.column()])
-
         if col_name in ['wavenumber', 'intensity', 'lower_level_key']:
             return str(value)
-        
         elif isinstance(value, (float, np.floating)):
-            if pd.isna(value):
-                return ""
-            if col_name == 'Mean Intensity':
-                return f"{int(round(value))}"
-            # --- MODIFICATION START: Display fractional uncertainty as a percentage ---
-            if col_name == 'Mean Uncertainty':
-                return f"{(value * 100):.1f} %"
-            # --- MODIFICATION END ---
-            if '\nSNR' in col_name or '\nIntensity' in col_name:
-                return f"{int(round(value))}"
+            if pd.isna(value): return ""
+            if col_name == 'Mean Intensity': return f"{int(round(value))}"
+            if col_name == 'Mean Uncertainty': return f"{(value * 100):.1f} %"
+            if '\nSNR' in col_name or '\nIntensity' in col_name: return f"{int(round(value))}"
             return f"{value:.4f}"
-
         else:
             return str(value)
 
@@ -212,7 +225,7 @@ class AnalysisWindow(QMainWindow):
         except Exception as e: QMessageBox.critical(self, "HDF5 Scan Error", f"Failed to populate data source table: {e}")
 
     def _get_checked_data_paths(self):
-        checked_paths = []
+        checked_paths = [];
         for r in range(self.data_source_table.rowCount()):
             for c in range(self.data_source_table.columnCount()):
                 item = self.data_source_table.item(r, c)
@@ -230,8 +243,7 @@ class AnalysisWindow(QMainWindow):
 
     def _on_level_file_selected(self):
         selected_file = self.level_file_combo.currentText()
-        if selected_file == "Select Energy Level File...":
-            self.level_table.setModel(None); self._clear_level_details(); self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame(); return
+        if selected_file == "Select Energy Level File...": self.level_table.setModel(None); self._clear_level_details(); self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame(); return
         path = f"/Levels/{selected_file}/table"
         try:
             self.current_energy_levels_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
@@ -248,8 +260,7 @@ class AnalysisWindow(QMainWindow):
 
     def _on_prev_id_file_selected(self):
         selected_file = self.prev_id_combo.currentText()
-        if selected_file == "Select Previous IDs File...":
-            self.current_previous_ids_df = pd.DataFrame(); self.line_data_table.setModel(None); self._clear_plot(); return
+        if selected_file == "Select Previous IDs File...": self.current_previous_ids_df = pd.DataFrame(); self.line_data_table.setModel(None); self._clear_plot(); return
         path = f"/Previous_Identifications/{selected_file}/table"
         try:
             self.current_previous_ids_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
@@ -262,8 +273,7 @@ class AnalysisWindow(QMainWindow):
             
     def _on_level_selected_in_table(self):
         selected_indexes = self.level_table.selectionModel().selectedRows()
-        if not selected_indexes or self.filtered_levels_df.empty:
-            self._clear_level_details(); self.line_data_table.setModel(None); self._clear_plot(); return
+        if not selected_indexes or self.filtered_levels_df.empty: self._clear_level_details(); self.line_data_table.setModel(None); self._clear_plot(); return
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
         self.level_key_display.setText(str(selected_level_data.get('key', 'N/A'))); self.level_energy_display.setText(f"{selected_level_data.get('energy', 0.0):.3f}")
@@ -281,8 +291,7 @@ class AnalysisWindow(QMainWindow):
         try:
             df_to_pass = lines_from_level.drop(columns=['normalized_key'], errors='ignore')
             self.master_line_data_df = self.analysis_module.aggregate_observed_data_for_display(h5_filepath=self.h5_filepath, previous_ids_df=df_to_pass, linelist_paths=linelist_paths_to_merge, tolerance=float(self.tolerance_edit.text()))
-            if not self.master_line_data_df.empty:
-                self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            if not self.master_line_data_df.empty: self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
             if self.master_line_data_df.empty: self.line_data_table.setModel(None); self._clear_plot(); return
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
@@ -335,9 +344,7 @@ class AnalysisWindow(QMainWindow):
             except Exception as e: print(f"Could not read FWHM for line {target_wavenumber} in {path}: {e}")
         if max_fwhm > 0: max_fwhm /= 1000.0
         plot_range = (5.0 * max_fwhm) if max_fwhm > 0 else 5.0
-        spectrum_data_loaded = False
-        num_plots = len(spectrum_data_paths)
-        axes = []
+        spectrum_data_loaded = False; num_plots = len(spectrum_data_paths); axes = []
         if plot_in_separate_windows and num_plots > 0:
             ax1 = self.figure.add_subplot(1, num_plots, 1); axes.append(ax1)
             for i in range(1, num_plots): axes.append(self.figure.add_subplot(1, num_plots, i + 1, sharey=ax1))
@@ -350,8 +357,7 @@ class AnalysisWindow(QMainWindow):
                     h5_dataset = f[spec_path]; attrs = h5_dataset.attrs
                     wavcorr, wstart, delw, rdsclfct = attrs.get('wavcorr', 0.0), attrs.get('wstart', 0.0), attrs.get('delw', 1.0), attrs.get('rdsclfct', 1.0)
                     data = h5_dataset[:]; spectrum_name = spec_path.split('/')[2]
-                    y, indices = data * rdsclfct, np.arange(len(data)); x = wstart + indices * delw
-                    x_corrected = x * (1.0 + wavcorr)
+                    y, indices = data * rdsclfct, np.arange(len(data)); x = wstart + indices * delw; x_corrected = x * (1.0 + wavcorr)
                     mask = (x_corrected >= target_wavenumber - plot_range) & (x_corrected <= target_wavenumber + plot_range)
                     if np.any(mask):
                         plot_axis.plot(x_corrected[mask], y[mask], color=line_color, alpha=0.7, label=spectrum_name)
@@ -363,11 +369,9 @@ class AnalysisWindow(QMainWindow):
             except Exception as e: print(f"Error loading spectrum data for plot from {spec_path}: {e}")
         if spectrum_data_loaded:
             if plot_in_separate_windows and num_plots > 0:
-                self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)')
-                axes[0].set_ylabel('Intensity')
+                self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)'); axes[0].set_ylabel('Intensity')
             else:
-                main_ax = axes[0]; main_ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); main_ax.set_xlabel(r'$\sigma$ (cm$^{-1}$)')
-                main_ax.set_ylabel('Intensity'); main_ax.legend()
+                main_ax = axes[0]; main_ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); main_ax.set_xlabel(r'$\sigma$ (cm$^{-1}$)'); main_ax.set_ylabel('Intensity'); main_ax.legend()
             self.figure.tight_layout()
         else:
             ax = self.figure.add_subplot(1,1,1)
@@ -385,38 +389,76 @@ class AnalysisWindow(QMainWindow):
             ax.set_xticks([]); ax.set_yticks([])
             self.canvas.draw()
 
+    # --- MODIFICATION START ---
     def _calculate_clicked(self):
         if self.master_line_data_df.empty: QMessageBox.warning(self, "Calculation Error", "No lines loaded."); return
-        lines_for_calculation = self.master_line_data_df
-        if lines_for_calculation.empty:
-            QMessageBox.information(self, "Calculation", "No lines available for calculation."); self.result_df = pd.DataFrame(); self.save_results_btn.setEnabled(False); return
         selected_indexes = self.level_table.selectionModel().selectedRows()
-        if not selected_indexes:
-            QMessageBox.warning(self, "Calculation Error", "Please select an upper level."); return
+        if not selected_indexes: QMessageBox.warning(self, "Calculation Error", "Please select an upper level."); return
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
         upper_level_key = selected_level_data['key']
         try:
-            self.result_df = self.analysis_module.calculate_branching_fractions(lines_for_calculation, upper_level_key=upper_level_key, energy_levels_df=self.current_energy_levels_df)
+            self.result_df = self.analysis_module.calculate_branching_fractions(self.master_line_data_df, upper_level_key=upper_level_key, energy_levels_df=self.current_energy_levels_df)
             if not self.result_df.empty:
-                QMessageBox.information(self, "Calculation Complete", "Branching fractions calculated successfully!")
                 self.save_results_btn.setEnabled(True)
+                # Show results in a pop-up dialog
+                results_dialog = ResultsDisplayDialog(self.result_df, self)
+                results_dialog.exec_()
             else:
                 QMessageBox.warning(self, "Calculation Error", "Calculation returned no results."); self.save_results_btn.setEnabled(False)
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"An error occurred: {e}"); self.result_df = pd.DataFrame(); self.save_results_btn.setEnabled(False)
             
     def _save_results_clicked(self):
-        if self.result_df.empty: QMessageBox.warning(self, "Save Error", "No results to save."); return
-        results_name, ok = QInputDialog.getText(self, "Save Results", "Enter a name for this analysis dataset:")
-        if ok and results_name:
-            h5_manager.create_group_if_not_exists(self.h5_filepath, '/Calculated_Branching_Fractions')
-            metadata_to_save = {'analysis_date': date.today().isoformat(), 'source_level_file': self.level_file_combo.currentText(),'source_previous_ids_file': self.prev_id_combo.currentText(), 'source_linelists': self._get_checked_data_paths(), 'wavenumber_tolerance': float(self.tolerance_edit.text()), 'upper_level_key': self.level_key_display.text(),'notes': f"Branching fractions for {self.level_key_display.text()} calculated using SAAS."}
+        if self.result_df.empty or self.master_line_data_df.empty:
+            QMessageBox.warning(self, "Save Error", "No results to save."); return
+
+        default_name = f"BF_analysis_{self.level_key_display.text()}_{date.today().strftime('%Y%m%d')}"
+        analysis_name, ok = QInputDialog.getText(self, "Save Analysis", "Enter a unique name for this analysis:", text=default_name)
+        
+        if ok and analysis_name:
+            base_group = "/Branching_Fraction_Analyses"
+            analysis_group_path = f"{base_group}/{analysis_name}"
+            
             try:
-                self.h5_manager.add_pandas_table(self.h5_filepath, '/Calculated_Branching_Fractions', results_name, self.result_df, metadata_dict=metadata_to_save)
-                QMessageBox.information(self, "Save Complete", f"Results saved to HDF5 at: /Calculated_Branching_Fractions/{results_name}")
-            except Exception as e: QMessageBox.critical(self, "HDF5 Save Error", f"Failed to save results:\n{e}")
-        else: QMessageBox.information(self, "Save Cancelled", "Saving results cancelled.")
+                # Check if the group already exists
+                with h5py.File(self.h5_filepath, 'a') as f:
+                    if analysis_group_path in f:
+                        reply = QMessageBox.question(self, "Overwrite Confirmation", 
+                                                     f"An analysis named '{analysis_name}' already exists. Do you want to overwrite it?",
+                                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                        if reply == QMessageBox.No:
+                            QMessageBox.information(self, "Save Cancelled", "Save operation cancelled."); return
+                        else:
+                            del f[analysis_group_path] # Delete existing group to overwrite
+
+                # Create the groups and save the data
+                self.h5_manager.create_group_if_not_exists(self.h5_filepath, base_group)
+                self.h5_manager.create_group_if_not_exists(self.h5_filepath, analysis_group_path)
+                
+                # Save both the input data and the final results
+                self.h5_manager.add_pandas_table(self.h5_filepath, analysis_group_path, "calculation_input_data", self.master_line_data_df)
+                self.h5_manager.add_pandas_table(self.h5_filepath, analysis_group_path, "branching_fraction_results", self.result_df)
+                
+                # Attach metadata to the parent group
+                metadata_to_save = {
+                    'analysis_date': date.today().isoformat(),
+                    'source_level_file': self.level_file_combo.currentText(),
+                    'source_previous_ids_file': self.prev_id_combo.currentText(),
+                    'source_linelists': str(self._get_checked_data_paths()),
+                    'wavenumber_tolerance': float(self.tolerance_edit.text()),
+                    'upper_level_key': self.level_key_display.text()
+                }
+                self.h5_manager.attach_metadata_to_group(self.h5_filepath, analysis_group_path, metadata_to_save)
+                
+                QMessageBox.information(self, "Save Complete", f"Analysis saved to HDF5 at:\n{analysis_group_path}")
+                # The main window's tree will refresh when this analysis window is closed.
+                
+            except Exception as e:
+                QMessageBox.critical(self, "HDF5 Save Error", f"Failed to save results:\n{e}")
+        else:
+            QMessageBox.information(self, "Save Cancelled", "Save operation cancelled.")
+    # --- MODIFICATION END ---
             
     def _run_debug_diagnostics(self):
         report = []
@@ -435,8 +477,7 @@ class AnalysisWindow(QMainWindow):
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
         upper_level_key = selected_level_data.get('key')
-        if not upper_level_key:
-            report.append("ERROR: A level is selected, but could not get its 'key' value!"); self._show_debug_report(report); return
+        if not upper_level_key: report.append("ERROR: A level is selected, but could not get its 'key' value!"); self._show_debug_report(report); return
         report.append(f"OK: A level is selected. The key being used for filtering is: '{upper_level_key}'")
         report.append("\n--- 3. Filtering Previous IDs ---")
         if 'normalized_key' not in self.current_previous_ids_df.columns:
@@ -447,8 +488,7 @@ class AnalysisWindow(QMainWindow):
         self._show_debug_report(report)
         
     def _show_debug_report(self, report_lines):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Debug Diagnostics Report"); dialog.setMinimumSize(700, 500)
+        dialog = QDialog(self); dialog.setWindowTitle("Debug Diagnostics Report"); dialog.setMinimumSize(700, 500)
         layout = QVBoxLayout(dialog); report_text = QTextEdit(); report_text.setReadOnly(True)
         report_text.setFont(QFont("Monospace", 10)); report_text.setText("\n".join(report_lines))
         layout.addWidget(report_text); button_box = QDialogButtonBox(QDialogButtonBox.Ok)
