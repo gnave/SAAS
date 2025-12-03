@@ -1,4 +1,4 @@
-# gui.py (Definitive Fix for Wavenumber String Conversion Bug)
+# gui.py (DEFINITIVE FIX for data type preservation on import)
 
 import sys
 import os
@@ -12,15 +12,16 @@ from PyQt5.QtWidgets import (
     QTreeView, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMenu
 )
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QDoubleValidator # Added QDoubleValidator
-from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex # Added QModelIndex
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QDoubleValidator
+from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex
+
 import numpy as np
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
-from analysis_window import AnalysisWindow # This import is crucial
+from analysis_window import AnalysisWindow
 
 import importers
 import h5_manager
@@ -53,9 +54,6 @@ class PandasModel(QAbstractTableModel):
 #==============================================================================
 # HELPER FUNCTION: The robust reader. (Used by analysis_window now)
 #==============================================================================
-# This function is now also defined in h5_manager for consistency, 
-# and called directly from analysis_window.
-# Keeping it here for compatibility with existing gui.py usage.
 def read_hdf_table_robustly(h5_dataset):
     data = h5_dataset[:]
     df_data = {}
@@ -473,7 +471,6 @@ class ImportWizardDialog(QDialog):
         self.preview_table.setModel(PandasModel(self.df_preview))
         self._on_group_selected()
 
-    # --- THIS METHOD IS MODIFIED ---
     def accept(self):
         table_name = self.table_name_edit.text().strip()
         group_path = self.group_combo.currentText()
@@ -501,21 +498,27 @@ class ImportWizardDialog(QDialog):
             if col_type != "(ignore)":
                 final_df[col_type] = full_df.iloc[:, i]
         
-        # --- START OF DEFINITIVE FIX ---
-        # Create a comprehensive list of all possible numeric columns from all schemas.
         numeric_cols = [
             'j_value', 'energy', 'parity', 'lifetime', 'wavenumber', 'wavelength', 
             'intensity', 'lower_level_energy', 'upper_level_energy', 'log_gf', 
             'transition_probability', 'lower_level_j', 'upper_level_j',
-            'snr', 'epstot', 'epsran' # Added from your .lin file schema
+            'snr', 'epstot', 'epsran'
         ]
-        # --- END OF DEFINITIVE FIX ---
         
+        # --- MODIFICATION START: Preserve string formatting for Previous IDs ---
         for col in final_df.columns:
+            # Special case to preserve original formatting for these specific columns
+            # ONLY when importing to the /Previous_Identifications group.
+            if group_path == '/Previous_Identifications' and col in ['wavenumber', 'intensity']:
+                final_df[col] = final_df[col].astype(str)
+                continue # Skip to next column
+
+            # Original logic for all other columns and groups
             if col in numeric_cols:
                 final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
             else:
                 final_df[col] = final_df[col].astype(str)
+        # --- MODIFICATION END ---
                 
         metadata_to_save = {
             'original_filename': self.orig_filename_label.text(),
@@ -544,7 +547,7 @@ class WavenumberMatchDialog(QDialog):
         self._populate_combos()
         
         self.tolerance_edit = QLineEdit("0.02")
-        self.tolerance_edit.setValidator(QDoubleValidator(0.0, 10.0, 3, self)) # Allow reasonable range for tolerance
+        self.tolerance_edit.setValidator(QDoubleValidator(0.0, 10.0, 3, self))
         self.output_name_edit = QLineEdit()
 
         layout.addRow("Experimental Linelist:", self.exp_linelist_combo)
@@ -585,7 +588,7 @@ class WavenumberMatchDialog(QDialog):
         """Auto-generates a suggested name for the output dataset."""
         current_text = self.exp_linelist_combo.currentText()
         if current_text:
-            base_name = current_text.split('/')[-3] # Get spectrum name from path like /Spectra/NAME/Raw_Linelists/TABLE/table
+            base_name = current_text.split('/')[-3]
             today = date.today().strftime("%Y%m%d")
             suggested_name = f"matched_{base_name}_{today}"
             self.output_name_edit.setText(suggested_name)
@@ -640,7 +643,6 @@ class MainWindow(QMainWindow):
         self.import_linelist_btn = QPushButton("Import Raw Linelist (.lin)...")
         self.import_cal_linelist_btn = QPushButton("Import Calib. Linelist (.txt)...")
         self.run_match_btn = QPushButton("Run Wavenumber Matching...")
-        # NEW: Branching Fraction Analysis button
         self.run_branching_fraction_analysis_btn = QPushButton("Run Branching Fraction Analysis...")
         
         button_layout.addWidget(create_btn)
@@ -651,9 +653,9 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.import_table_btn)
         button_layout.addWidget(self.import_linelist_btn)
         button_layout.addWidget(self.import_cal_linelist_btn)
-        button_layout.addStretch() # Push import buttons to left
+        button_layout.addStretch()
         button_layout.addWidget(self.run_match_btn)
-        button_layout.addWidget(self.run_branching_fraction_analysis_btn) # Add the new button
+        button_layout.addWidget(self.run_branching_fraction_analysis_btn)
         
         self.file_label = QLabel("No project file loaded.")
         self.file_label.setStyleSheet("font-style: italic; color: grey;")
@@ -703,7 +705,6 @@ class MainWindow(QMainWindow):
         self.import_linelist_btn.clicked.connect(self._show_linelist_import_dialog)
         self.import_cal_linelist_btn.clicked.connect(self._show_cal_linelist_import_dialog)
         self.run_match_btn.clicked.connect(self._show_match_dialog)
-        # NEW: Connect the branching fraction analysis button
         self.run_branching_fraction_analysis_btn.clicked.connect(self._launch_branching_fraction_analysis)
         
         self.tree_view.clicked.connect(self._on_tree_item_selected)
@@ -716,7 +717,6 @@ class MainWindow(QMainWindow):
         self.import_linelist_btn.setEnabled(is_loaded)
         self.import_cal_linelist_btn.setEnabled(is_loaded)
         self.run_match_btn.setEnabled(is_loaded)
-        # NEW: Enable/disable the branching fraction analysis button
         self.run_branching_fraction_analysis_btn.setEnabled(is_loaded)
 
     def _create_file(self):
@@ -785,11 +785,9 @@ class MainWindow(QMainWindow):
                 self.attr_view.resizeColumnsToContents()
                 
                 if isinstance(h5_object, h5py.Dataset):
-                    # Check if the parent is a group with 'pandas_type' attribute, 
-                    # meaning it's a Pandas table stored in a /group/table structure
                     if h5_object.parent and 'pandas_type' in h5_object.parent.attrs:
                         print(self.current_h5_file,h5_path)
-                        df = h5_manager.read_hdf_table_robustly(self.current_h5_file, h5_path) # Use h5_manager's reader
+                        df = h5_manager.read_hdf_table_robustly(self.current_h5_file, h5_path)
                         self.data_table_view.setModel(PandasModel(df.head(200)))
                         self.data_table_view.show()
                     elif h5_object.ndim == 1:
@@ -859,17 +857,12 @@ class MainWindow(QMainWindow):
         if self.current_h5_file:
             dialog = WavenumberMatchDialog(self.current_h5_file, self)
             if dialog.exec_():
-                self._populate_tree_view() # Refresh tree to show new dataset
+                self._populate_tree_view()
 
-    # NEW: Method to launch the interactive branching fraction analysis window
     def _launch_branching_fraction_analysis(self):
-        """
-        Launches the interactive branching fraction analysis window.
-        """
         if self.current_h5_file:
             self.branching_fraction_analysis_window = AnalysisWindow(self.current_h5_file, self)
             self.branching_fraction_analysis_window.show()
-            # Important: When analysis window closes, refresh the main tree
             self.branching_fraction_analysis_window.destroyed.connect(self._populate_tree_view)
         else:
             QMessageBox.warning(self, "No HDF5 File", "Please open an HDF5 project file first.")

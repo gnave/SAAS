@@ -1,4 +1,4 @@
-# analysis_window.py (MODIFIED to remove 'Include in Fit')
+# analysis_window.py (DEFINITIVE FIX for separate window plotting)
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -46,30 +46,32 @@ class PandasTableModel(QAbstractTableModel):
             if orientation == Qt.Vertical: return str(self.df.index[section])
         return None
 
-# --- MODIFICATION START: 'Include in Fit' logic is fully removed ---
 class LineDataTableModel(PandasTableModel):
-    """A simplified table model that removes all 'Include in Fit' logic."""
     def __init__(self, data: pd.DataFrame, parent=None):
         super().__init__(data, parent)
 
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         if not index.isValid() or role != Qt.DisplayRole:
             return None
-        
+
         value = self.df.iloc[index.row(), index.column()]
         col_name = str(self.df.columns[index.column()])
+
+        if col_name in ['wavenumber', 'intensity', 'lower_level_key']:
+            return str(value)
         
-        if isinstance(value, (float, np.floating)):
-            if pd.isna(value): return ""
+        elif isinstance(value, (float, np.floating)):
+            if pd.isna(value):
+                return ""
             if '\nSNR' in col_name or '\nIntensity' in col_name:
                 return f"{int(round(value))}"
             return f"{value:.4f}"
-        return str(value)
+
+        else:
+            return str(value)
 
     def flags(self, index: QModelIndex):
-        # Just return the base flags, as no columns are checkable/editable.
         return super().flags(index)
-# --- MODIFICATION END ---
 
 class PlotPopupDialog(QDialog):
     def __init__(self, title, parent=None):
@@ -352,6 +354,7 @@ class AnalysisWindow(QMainWindow):
             
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
+            
             self.line_data_table.horizontalHeader().setFixedHeight(40)
             self._clear_plot()
             current_height = self.central_splitter.height()
@@ -374,22 +377,30 @@ class AnalysisWindow(QMainWindow):
             
     def _on_line_selected(self, index: QModelIndex):
         if not index.isValid() or self.master_line_data_df.empty:
-            self._clear_plot(); return
+            self._clear_plot()
+            return
 
         row = index.row()
         line_data = self.master_line_data_df.iloc[row]
         wavenumber = line_data.get('wavenumber')
         if wavenumber is not None:
-            self._update_plot(wavenumber, self._get_checked_data_paths())
+            try:
+                wavenumber_float = float(wavenumber)
+                self._update_plot(wavenumber_float, self._get_checked_data_paths())
+            except (ValueError, TypeError):
+                self._clear_plot()
         else:
             self._clear_plot()
             
+    # --- MODIFICATION START: The plotting logic is now restored ---
     def _update_plot(self, target_wavenumber: float, all_checked_paths: list):
         self.figure.clear()
+        
         plot_in_separate_windows = self.separate_plots_checkbox.isChecked()
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
         linelist_paths = [p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
         spectrum_data_paths = [p for p in all_checked_paths if 'Raw_Data' in p]
+        
         max_fwhm = 0.0
         tolerance = float(self.tolerance_edit.text())
         for path in linelist_paths:
@@ -405,14 +416,26 @@ class AnalysisWindow(QMainWindow):
                 print(f"Could not read FWHM for line {target_wavenumber} in {path}: {e}")
         if max_fwhm > 0: max_fwhm /= 1000.0
         plot_range = (5.0 * max_fwhm) if max_fwhm > 0 else 5.0
+        
         spectrum_data_loaded = False
-        
-        self.ax = self.figure.add_subplot(1, 1, 1)
-        
+        num_plots = len(spectrum_data_paths)
+
+        axes = []
+        if plot_in_separate_windows and num_plots > 0:
+            # Create a shared reference axis for the first plot
+            ax1 = self.figure.add_subplot(1, num_plots, 1)
+            axes.append(ax1)
+            for i in range(1, num_plots):
+                # Add subsequent plots, sharing the Y-axis with the first
+                axes.append(self.figure.add_subplot(1, num_plots, i + 1, sharey=ax1))
+        else:
+            axes = [self.figure.add_subplot(1, 1, 1)]
+
         for i, spec_path in enumerate(spectrum_data_paths):
             try:
+                plot_axis = axes[i] if plot_in_separate_windows and num_plots > 0 else axes[0]
                 line_color = color_cycle[i % len(color_cycle)]
-                vline_color = 'red'
+                
                 with h5py.File(self.h5_filepath, 'r') as f:
                     h5_dataset = f[spec_path]
                     attrs = h5_dataset.attrs
@@ -424,23 +447,36 @@ class AnalysisWindow(QMainWindow):
                     x_corrected = x * (1.0 + wavcorr)
                     mask = (x_corrected >= target_wavenumber - plot_range) & (x_corrected <= target_wavenumber + plot_range)
                     if np.any(mask):
-                        self.ax.plot(x_corrected[mask], y[mask], color=line_color, alpha=0.7, label=spectrum_name)
+                        plot_axis.plot(x_corrected[mask], y[mask], color=line_color, alpha=0.7, label=spectrum_name)
+                        plot_axis.axvline(target_wavenumber, color='red', linestyle='--')
+                        plot_axis.grid(True)
+                        if plot_in_separate_windows:
+                            plot_axis.set_title(spectrum_name, fontsize=10)
+                            if i > 0: # Hide y-axis labels for shared axes
+                                plt.setp(plot_axis.get_yticklabels(), visible=False)
                         spectrum_data_loaded = True
             except Exception as e:
                 print(f"Error loading spectrum data for plot from {spec_path}: {e}")
-        
+
         if spectrum_data_loaded:
-            self.ax.axvline(target_wavenumber, color=vline_color, linestyle='--')
-            self.ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
-            self.ax.legend()
-            self.ax.grid(True)
-            self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)')
-            self.figure.supylabel('Intensity')
+            if plot_in_separate_windows and num_plots > 0:
+                self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
+                self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)')
+                axes[0].set_ylabel('Intensity') # Only set y-label on the first plot
+            else:
+                main_ax = axes[0]
+                main_ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
+                main_ax.set_xlabel(r'$\sigma$ (cm$^{-1}$)')
+                main_ax.set_ylabel('Intensity')
+                main_ax.legend()
             self.figure.tight_layout()
         else:
-            self.ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded", ha='center', va='center', transform=self.ax.transAxes, fontsize=12, color='darkred')
+            # If no data was loaded at all, add a single placeholder axis
+            ax = self.figure.add_subplot(1,1,1)
+            ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='darkred')
         
         self.canvas.draw()
+    # --- MODIFICATION END ---
             
     def _close_extra_plot_windows(self):
         for window in self.extra_plot_windows: window.close()
@@ -458,11 +494,12 @@ class AnalysisWindow(QMainWindow):
         if self.master_line_data_df.empty:
             QMessageBox.warning(self, "Calculation Error", "No lines loaded."); return
         
-        # --- MODIFICATION: Use all lines for calculation ---
         lines_for_calculation = self.master_line_data_df
         if lines_for_calculation.empty:
             QMessageBox.information(self, "Calculation", "No lines available for calculation.");
-            self.result_df, self.save_results_btn.setEnabled(pd.DataFrame(), False); return
+            self.result_df = pd.DataFrame()
+            self.save_results_btn.setEnabled(False)
+            return
 
         selected_indexes = self.level_table.selectionModel().selectedRows()
         if not selected_indexes:
@@ -480,7 +517,8 @@ class AnalysisWindow(QMainWindow):
                 self.save_results_btn.setEnabled(False)
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"An error occurred: {e}")
-            self.result_df, self.save_results_btn.setEnabled(pd.DataFrame(), False)
+            self.result_df = pd.DataFrame()
+            self.save_results_btn.setEnabled(False)
             
     def _save_results_clicked(self):
         if self.result_df.empty:
