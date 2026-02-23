@@ -1,4 +1,4 @@
-# analysis_window.py (MODIFIED to show and save results)
+# analysis_window.py (FULLY DOCUMENTED)
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -27,11 +27,17 @@ import h5_manager
 import analysis
 
 class PandasTableModel(QAbstractTableModel):
+    """A standard Qt Table Model for displaying a Pandas DataFrame."""
     def __init__(self, data: pd.DataFrame, parent=None):
         super().__init__(parent)
         self.df = data
-    def rowCount(self, parent=QModelIndex()): return self.df.shape[0]
-    def columnCount(self, parent=QModelIndex()): return self.df.shape[1]
+
+    def rowCount(self, parent=QModelIndex()):
+        return self.df.shape[0]
+
+    def columnCount(self, parent=QModelIndex()):
+        return self.df.shape[1]
+
     def data(self, index, role=Qt.DisplayRole):
         if index.isValid() and role == Qt.DisplayRole:
             value = self.df.iloc[index.row(), index.column()]
@@ -40,22 +46,71 @@ class PandasTableModel(QAbstractTableModel):
                 return f"{value:.4f}"
             return str(value)
         return None
+
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
-            if orientation == Qt.Horizontal: return str(self.df.columns[section])
-            if orientation == Qt.Vertical: return str(self.df.index[section])
+            if orientation == Qt.Horizontal:
+                return str(self.df.columns[section])
+            if orientation == Qt.Vertical:
+                return str(self.df.index[section])
         return None
 
-# --- MODIFICATION START ---
+class LineDataTableModel(PandasTableModel):
+    """
+    A specialized table model for the main analysis table.
+
+    This model provides custom data formatting for different columns to ensure
+    readability and correctness. For example, it ensures the base 'wavenumber'
+    and 'intensity' are displayed as raw strings, while formatting calculated
+    values like mean uncertainty as percentages.
+    """
+    def __init__(self, data: pd.DataFrame, parent=None):
+        super().__init__(data, parent)
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        """Overrides the base data method to provide custom formatting."""
+        if not index.isValid() or role != Qt.DisplayRole:
+            return None
+
+        value = self.df.iloc[index.row(), index.column()]
+        col_name = str(self.df.columns[index.column()])
+
+        # Rule 1: Always treat the original 'intensity', 'wavenumber', and 'key' columns as text
+        # to preserve their original formatting from the source file.
+        if col_name in ['wavenumber', 'intensity', 'lower_level_key']:
+            return str(value)
+        
+        # Rule 2: Handle formatting for calculated float columns.
+        elif isinstance(value, (float, np.floating)):
+            if pd.isna(value):
+                return ""
+            if col_name == 'Mean Intensity':
+                return f"{int(round(value))}"
+            if col_name == 'Mean Uncertainty':
+                # Display the fractional uncertainty as a formatted percentage.
+                return f"{(value * 100):.1f} %"
+            if '\nSNR' in col_name or '\nIntensity' in col_name:
+                # Display individual spectrum measurements as integers.
+                return f"{int(round(value))}"
+            # Default formatting for any other floats.
+            return f"{value:.4f}"
+
+        # Rule 3: Default fallback for any other data types.
+        else:
+            return str(value)
+
+    def flags(self, index: QModelIndex):
+        """Returns the item flags for the given index. This table is read-only."""
+        return super().flags(index)
+
 class ResultsDisplayDialog(QDialog):
-    """A dialog to display a pandas DataFrame in a QTableView."""
+    """A simple dialog window to display a DataFrame in a QTableView, used for showing results."""
     def __init__(self, df, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calculation Results")
         self.setMinimumSize(800, 500)
         
         layout = QVBoxLayout(self)
-        
         self.table_view = QTableView()
         self.table_view.setModel(PandasTableModel(df))
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -67,32 +122,8 @@ class ResultsDisplayDialog(QDialog):
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
 
-# --- MODIFICATION END ---
-
-class LineDataTableModel(PandasTableModel):
-    def __init__(self, data: pd.DataFrame, parent=None):
-        super().__init__(data, parent)
-
-    def data(self, index: QModelIndex, role=Qt.DisplayRole):
-        if not index.isValid() or role != Qt.DisplayRole:
-            return None
-        value = self.df.iloc[index.row(), index.column()]
-        col_name = str(self.df.columns[index.column()])
-        if col_name in ['wavenumber', 'intensity', 'lower_level_key']:
-            return str(value)
-        elif isinstance(value, (float, np.floating)):
-            if pd.isna(value): return ""
-            if col_name == 'Mean Intensity': return f"{int(round(value))}"
-            if col_name == 'Mean Uncertainty': return f"{(value * 100):.1f} %"
-            if '\nSNR' in col_name or '\nIntensity' in col_name: return f"{int(round(value))}"
-            return f"{value:.4f}"
-        else:
-            return str(value)
-
-    def flags(self, index: QModelIndex):
-        return super().flags(index)
-
 class PlotPopupDialog(QDialog):
+    """A generic dialog for displaying a Matplotlib plot in a separate window."""
     def __init__(self, title, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title); self.setMinimumSize(600, 400); layout = QVBoxLayout(self)
@@ -101,42 +132,79 @@ class PlotPopupDialog(QDialog):
         self.ax = self.figure.add_subplot(111)
 
 class AnalysisWindow(QMainWindow):
+    """
+    The main window for the interactive branching fraction analysis workflow.
+
+    This window provides controls for selecting atomic data, experimental spectra,
+    and running calculations. It displays an aggregated table of all relevant data
+    and allows for interactive plotting of spectral lines.
+    """
     def __init__(self, h5_filepath, parent=None):
+        """Initializes the analysis window and its components."""
         super().__init__(parent)
         self.setWindowTitle("Interactive Branching Fraction Analysis"); self.setGeometry(100, 100, 1400, 800)
-        self.extra_plot_windows = []; self.h5_filepath = h5_filepath; self.h5_manager = h5_manager; self.analysis_module = analysis
-        self.current_energy_levels_df = pd.DataFrame(); self.current_previous_ids_df = pd.DataFrame(); self.filtered_levels_df = pd.DataFrame()
-        self.master_line_data_df = pd.DataFrame(); self.result_df = pd.DataFrame()
+
+        # --- Data Members ---
+        self.h5_filepath = h5_filepath
+        self.h5_manager = h5_manager
+        self.analysis_module = analysis
+        self.current_energy_levels_df = pd.DataFrame()  # Master energy level data
+        self.current_previous_ids_df = pd.DataFrame()   # Master list of transitions for an upper level
+        self.filtered_levels_df = pd.DataFrame()        # Levels with lifetimes > 0
+        self.master_line_data_df = pd.DataFrame()       # The main aggregated data table shown in the GUI
+        self.result_df = pd.DataFrame()                 # The final calculated branching fractions
+
+        # Mapping of GUI labels to HDF5 group names for data sources.
         self.DATA_SOURCE_COLUMNS = {"Cal. Linelists": "Calibrated_Linelists", "Ident. Lines": "Identified_Lines", "Raw Spectrum": "Raw_Data"}
-        self._create_menu_bar(); self._create_main_layout(); self._populate_initial_comboboxes(); self._populate_data_source_table(); self._clear_plot()
-        self.main_splitter.setSizes([350, 1050]); self.side_panel_splitter.setSizes([self.height() // 2, self.height() // 2])
+
+        # --- UI Setup ---
+        self._create_menu_bar()
+        self._create_main_layout()
+        self._populate_initial_comboboxes()
+        self._populate_data_source_table()
+        self._clear_plot()
+        
+        # Set initial sizes of the splitters
+        self.main_splitter.setSizes([350, 1050])
+        self.side_panel_splitter.setSizes([self.height() // 2, self.height() // 2])
 
     def _create_menu_bar(self):
+        """Creates the main menu bar (File, Debug, Help)."""
         menubar = self.menuBar()
         file_menu = menubar.addMenu("&File"); exit_action = QAction("Exit", self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
         debug_menu = menubar.addMenu("&Debug"); run_diagnostics_action = QAction("Run Diagnostics...", self); run_diagnostics_action.triggered.connect(self._run_debug_diagnostics); debug_menu.addAction(run_diagnostics_action)
         help_menu = menubar.addMenu("&Help"); help_action = QAction("About", self); help_action.triggered.connect(lambda: QMessageBox.information(self, "About", "SAAS")); help_menu.addAction(help_action)
 
     def _create_main_layout(self):
-        self.main_splitter = QSplitter(Qt.Horizontal); side_panel_widget = self._create_side_panel(); central_content_widget = self._create_central_content_widget()
-        self.main_splitter.addWidget(side_panel_widget); self.main_splitter.addWidget(central_content_widget); self.setCentralWidget(self.main_splitter)
+        """Creates the main horizontal splitter that divides the controls from the data view."""
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        side_panel_widget = self._create_side_panel()
+        central_content_widget = self._create_central_content_widget()
+        self.main_splitter.addWidget(side_panel_widget)
+        self.main_splitter.addWidget(central_content_widget)
+        self.setCentralWidget(self.main_splitter)
 
     def _create_side_panel(self):
+        """Creates the left-hand panel containing all user controls, split vertically."""
         self.side_panel_splitter = QSplitter(Qt.Vertical)
+        
+        # --- Top Section: Level Selection ---
         level_selector_container = QWidget(); level_selector_layout = QVBoxLayout(level_selector_container)
-        data_source_container = QWidget(); data_source_layout = QVBoxLayout(data_source_container)
         self.level_file_combo = QComboBox(); self.level_file_combo.addItem("Select Energy Level File..."); self.level_file_combo.currentIndexChanged.connect(self._on_level_file_selected)
         level_selector_layout.addWidget(QLabel("Master Energy Level File:")); level_selector_layout.addWidget(self.level_file_combo)
         self.level_table = QTableView(); self.level_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.level_table.setSelectionMode(QAbstractItemView.SingleSelection); self.level_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.level_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive); self.level_table.clicked.connect(self._on_level_selected_in_table)
         level_selector_layout.addWidget(QLabel("Available Upper Levels:")); level_selector_layout.addWidget(self.level_table)
         header_height = self.level_table.horizontalHeader().height(); row_height = self.level_table.verticalHeader().defaultSectionSize()
-        self.level_table.setMaximumHeight(int(header_height + 5.5 * row_height))
+        self.level_table.setMaximumHeight(int(header_height + 5.5 * row_height)) # Limit table height
         self.level_details_group = QWidget(); level_details_layout = QFormLayout(self.level_details_group)
         self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
         for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display]: editor.setReadOnly(True)
         level_details_layout.addRow("key:", self.level_key_display); level_details_layout.addRow("energy (cm⁻¹):", self.level_energy_display); level_details_layout.addRow("j_value:", self.level_j_display); level_details_layout.addRow("parity:", self.level_parity_display); level_details_layout.addRow("lifetime (ns):", self.level_lifetime_display)
         level_selector_layout.addWidget(QLabel("Selected Level Details:")); level_selector_layout.addWidget(self.level_details_group)
+        
+        # --- Bottom Section: Data Sources and Actions ---
+        data_source_container = QWidget(); data_source_layout = QVBoxLayout(data_source_container)
         self.prev_id_combo = QComboBox(); self.prev_id_combo.addItem("Select Previous IDs File..."); self.prev_id_combo.currentIndexChanged.connect(self._on_prev_id_file_selected)
         data_source_layout.addWidget(QLabel("Master Previous IDs File:")); data_source_layout.addWidget(self.prev_id_combo)
         data_source_layout.addWidget(QLabel("Select Data for Comparison/Plotting:"))
@@ -151,25 +219,33 @@ class AnalysisWindow(QMainWindow):
         self.save_results_btn = QPushButton("Save Results to HDF5"); self.save_results_btn.clicked.connect(self._save_results_clicked); self.save_results_btn.setEnabled(False)
         analysis_controls_layout.addWidget(self.save_results_btn)
         data_source_layout.addWidget(self.analysis_controls_group)
+        
         self.side_panel_splitter.addWidget(level_selector_container); self.side_panel_splitter.addWidget(data_source_container)
         return self.side_panel_splitter
 
     def _create_central_content_widget(self):
+        """Creates the right-hand panel containing the main data table and the plot view."""
         self.central_splitter = QSplitter(Qt.Vertical)
+        
+        # The main table for displaying aggregated line data
         self.line_data_table = QTableView(); self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected)
-        self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers) # Table is read-only
         self.line_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu); self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
         self.central_splitter.addWidget(self.line_data_table)
+        
+        # The Matplotlib widget for plotting spectra
         main_plot_widget = QWidget(); plot_layout = QVBoxLayout(main_plot_widget); plot_layout.setContentsMargins(0, 0, 0, 0)
         self.figure = Figure(figsize=(5, 4), dpi=100); self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self); self.ax = self.figure.add_subplot(111)
         plot_layout.addWidget(self.toolbar); plot_layout.addWidget(self.canvas)
         self.central_splitter.addWidget(main_plot_widget)
+        
         return self.central_splitter
 
     def _show_line_table_context_menu(self, position):
+        """Creates and shows a context menu when the line data table is right-clicked."""
         index = self.line_data_table.indexAt(position)
         if not index.isValid(): return
         menu = QMenu()
@@ -178,24 +254,40 @@ class AnalysisWindow(QMainWindow):
         if action == normalize_action: self._normalize_intensities(index.row())
 
     def _normalize_intensities(self, reference_line_row: int):
+        """
+        Handles the normalization action from the context menu.
+
+        This function calls the analysis module to perform the normalization,
+        re-calculates the weighted averages with the new intensities, and then
+        updates the table view with the rescaled data.
+        """
         if self.master_line_data_df.empty: QMessageBox.warning(self, "Normalization Error", "No data loaded to normalize."); return
         try:
+            # Call the analysis function to rescale the intensity values.
             normalized_df = self.analysis_module.normalize_intensities_by_reference_line(self.master_line_data_df, reference_line_row)
             self.master_line_data_df = normalized_df
+            
+            # After normalizing, the mean intensities must be recalculated.
             self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            
+            # Update the table view with the new data.
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
+            
+            # Restore the user's selection and update the plot for a smooth workflow.
             new_index_to_select = model.index(reference_line_row, 0)
             if new_index_to_select.isValid():
                 self.line_data_table.setCurrentIndex(new_index_to_select)
                 selection_model = self.line_data_table.selectionModel()
                 selection_model.select(new_index_to_select, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 self._on_line_selected(new_index_to_select)
+
             ref_level_key = self.master_line_data_df.iloc[reference_line_row].get('lower_level_key', 'Unknown')
             QMessageBox.information(self, "Success", f"Intensities have been normalized using '{ref_level_key}' as the reference.")
         except Exception as e: QMessageBox.critical(self, "Normalization Error", f"An error occurred during normalization:\n{e}")
 
     def _populate_data_source_table(self):
+        """Scans the HDF5 file and populates the data source table with available items."""
         try:
             with h5py.File(self.h5_filepath, 'r') as f:
                 if '/Spectra' not in f: self.data_source_table.clear(); return
@@ -217,6 +309,7 @@ class AnalysisWindow(QMainWindow):
                                     first_dset_name = sub_datasets[0]; dset_path = f"{base_path}/{first_dset_name}/table"
                                     if dset_path in f: item_text = first_dset_name
                             if item_text and dset_path:
+                                # Store the HDF5 path in the item's UserRole for later retrieval.
                                 item.setText(""), item.setToolTip(dset_path), item.setData(Qt.UserRole, dset_path)
                                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                                 item.setBackground(QBrush(QColor('white'))); item.setCheckState(Qt.Unchecked)
@@ -225,6 +318,7 @@ class AnalysisWindow(QMainWindow):
         except Exception as e: QMessageBox.critical(self, "HDF5 Scan Error", f"Failed to populate data source table: {e}")
 
     def _get_checked_data_paths(self):
+        """Retrieves the HDF5 paths of all data sources checked by the user."""
         checked_paths = [];
         for r in range(self.data_source_table.rowCount()):
             for c in range(self.data_source_table.columnCount()):
@@ -235,6 +329,7 @@ class AnalysisWindow(QMainWindow):
         return checked_paths
         
     def _populate_initial_comboboxes(self):
+        """Populates the dropdown menus with available Level and ID files from the HDF5 file."""
         try:
             with h5py.File(self.h5_filepath, 'r') as f:
                 if '/Levels' in f: self.level_file_combo.addItems([name for name in f['/Levels'].keys() if isinstance(f['/Levels'][name], h5py.Group)])
@@ -242,13 +337,16 @@ class AnalysisWindow(QMainWindow):
         except Exception as e: QMessageBox.critical(self, "HDF5 Error", f"Failed to read HDF5 structure: {e}")
 
     def _on_level_file_selected(self):
+        """Handles the event when the user selects a master energy level file."""
         selected_file = self.level_file_combo.currentText()
         if selected_file == "Select Energy Level File...": self.level_table.setModel(None); self._clear_level_details(); self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame(); return
         path = f"/Levels/{selected_file}/table"
         try:
             self.current_energy_levels_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
+            # Sanitize the key column for consistent matching.
             if not self.current_energy_levels_df.empty and 'key' in self.current_energy_levels_df.columns:
                 self.current_energy_levels_df['key'] = self.current_energy_levels_df['key'].astype(str).str.replace('*', '', regex=False).str.strip()
+            # Filter for levels with a measured lifetime, which are the only valid upper levels.
             if not self.current_energy_levels_df.empty and 'lifetime' in self.current_energy_levels_df.columns:
                 self.filtered_levels_df = self.current_energy_levels_df[self.current_energy_levels_df['lifetime'] > 0].copy()
                 self.level_table.setModel(PandasTableModel(self.filtered_levels_df[['key', 'energy']])); self.level_table.resizeColumnsToContents()
@@ -259,40 +357,65 @@ class AnalysisWindow(QMainWindow):
         finally: self._clear_level_details()
 
     def _on_prev_id_file_selected(self):
+        """Handles the event when the user selects a Previous Identifications file."""
         selected_file = self.prev_id_combo.currentText()
         if selected_file == "Select Previous IDs File...": self.current_previous_ids_df = pd.DataFrame(); self.line_data_table.setModel(None); self._clear_plot(); return
         path = f"/Previous_Identifications/{selected_file}/table"
         try:
             self.current_previous_ids_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
+            # Create a sanitized 'normalized_key' for consistent matching with the levels file.
             if not self.current_previous_ids_df.empty and 'upper_level_key' in self.current_previous_ids_df.columns:
                 self.current_previous_ids_df['normalized_key'] = self.current_previous_ids_df['upper_level_key'].astype(str).str.replace('*', '', regex=False).str.strip()
+            # If a level is already selected, refresh the main table.
             if self.level_table.selectionModel() and self.level_table.selectionModel().hasSelection(): self._on_level_selected_in_table()
         except Exception as e:
             self.current_previous_ids_df = pd.DataFrame(); QMessageBox.critical(self, "HDF5 Read Error", f"Could not read Previous IDs from {path}:\n{e}")
             self.line_data_table.setModel(None); self._clear_plot()
             
     def _on_level_selected_in_table(self):
+        """Handles the event when a user clicks on an upper level in the level table."""
         selected_indexes = self.level_table.selectionModel().selectedRows()
         if not selected_indexes or self.filtered_levels_df.empty: self._clear_level_details(); self.line_data_table.setModel(None); self._clear_plot(); return
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
+        # Update the detail display boxes.
         self.level_key_display.setText(str(selected_level_data.get('key', 'N/A'))); self.level_energy_display.setText(f"{selected_level_data.get('energy', 0.0):.3f}")
         self.level_j_display.setText(str(selected_level_data.get('j_value', 'N/A'))); self.level_parity_display.setText(str(selected_level_data.get('parity', 'N/A')))
         self.level_lifetime_display.setText(f"{selected_level_data.get('lifetime', 0.0):.3f}")
+        # This is the primary trigger to build the main data table.
         self._populate_line_data_table(selected_level_data['key'])
         
     def _populate_line_data_table(self, upper_level_key: str):
+        """
+        The core data aggregation and display function.
+
+        This function is called when a valid upper level is selected. It:
+        1. Filters the 'Previous IDs' for lines originating from the selected upper level.
+        2. Gathers the paths of all user-checked experimental linelists.
+        3. Calls `analysis.aggregate_observed_data_for_display` to merge all data.
+        4. Calls `analysis.add_weighted_averages` to calculate mean values.
+        5. Displays the resulting final DataFrame in the main table view.
+        """
         if self.current_previous_ids_df.empty: self.line_data_table.setModel(None); self._clear_plot(); return
         if 'normalized_key' not in self.current_previous_ids_df.columns: return
+        
         lines_from_level = self.current_previous_ids_df[self.current_previous_ids_df['normalized_key'] == upper_level_key]
         if lines_from_level.empty: self.line_data_table.setModel(None); self._clear_plot(); return
+        
         all_checked_paths = self._get_checked_data_paths()
         linelist_paths_to_merge = [p for p in all_checked_paths if ('Identified_Lines' in p or 'Calibrated_Linelists' in p)]
+        
         try:
             df_to_pass = lines_from_level.drop(columns=['normalized_key'], errors='ignore')
+            # 1. Aggregate experimental data.
             self.master_line_data_df = self.analysis_module.aggregate_observed_data_for_display(h5_filepath=self.h5_filepath, previous_ids_df=df_to_pass, linelist_paths=linelist_paths_to_merge, tolerance=float(self.tolerance_edit.text()))
+            
+            # 2. Calculate weighted averages.
             if not self.master_line_data_df.empty: self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            
             if self.master_line_data_df.empty: self.line_data_table.setModel(None); self._clear_plot(); return
+            
+            # 3. Display the final table.
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
             self.line_data_table.horizontalHeader().setFixedHeight(40)
@@ -304,9 +427,11 @@ class AnalysisWindow(QMainWindow):
             self.line_data_table.setModel(None); self._clear_plot()
             
     def _clear_level_details(self):
+        """Clears the text from the level detail display boxes."""
         self.level_key_display.clear(); self.level_energy_display.clear(); self.level_j_display.clear(); self.level_parity_display.clear(); self.level_lifetime_display.clear()
         
     def _on_data_source_table_item_changed(self, item):
+        """Handles the event when a user checks/unchecks a data source, triggering a table refresh."""
         if self.level_table.selectionModel() and self.level_table.selectionModel().hasSelection():
             selected_indexes = self.level_table.selectionModel().selectedRows()
             row = selected_indexes[0].row()
@@ -315,22 +440,33 @@ class AnalysisWindow(QMainWindow):
         else: self.line_data_table.setModel(None)
             
     def _on_line_selected(self, index: QModelIndex):
+        """Handles the event when a user clicks a line in the main table, triggering a plot update."""
         if not index.isValid() or self.master_line_data_df.empty: self._clear_plot(); return
         row = index.row(); line_data = self.master_line_data_df.iloc[row]
         wavenumber = line_data.get('wavenumber')
         if wavenumber is not None:
             try:
+                # Wavenumber must be converted to float for plotting.
                 wavenumber_float = float(wavenumber)
                 self._update_plot(wavenumber_float, self._get_checked_data_paths())
             except (ValueError, TypeError): self._clear_plot()
         else: self._clear_plot()
             
     def _update_plot(self, target_wavenumber: float, all_checked_paths: list):
+        """
+        Draws the spectral data for a selected line in the Matplotlib canvas.
+
+        This function supports two modes based on the checkbox state:
+        1.  Overlay Mode: All selected spectra are plotted on a single axis.
+        2.  Separate Mode: Each spectrum is plotted on its own subplot with a shared Y-axis.
+        """
         self.figure.clear()
         plot_in_separate_windows = self.separate_plots_checkbox.isChecked()
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        linelist_paths = [p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
         spectrum_data_paths = [p for p in all_checked_paths if 'Raw_Data' in p]
+        
+        # Determine plot range by finding the widest line width among matching lines.
+        linelist_paths = [p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
         max_fwhm = 0.0
         tolerance = float(self.tolerance_edit.text())
         for path in linelist_paths:
@@ -342,13 +478,19 @@ class AnalysisWindow(QMainWindow):
                 best_match_index = differences.idxmin()
                 if differences[best_match_index] <= tolerance: max_fwhm = max(max_fwhm, linelist_df.loc[best_match_index, 'width'])
             except Exception as e: print(f"Could not read FWHM for line {target_wavenumber} in {path}: {e}")
-        if max_fwhm > 0: max_fwhm /= 1000.0
+        if max_fwhm > 0: max_fwhm /= 1000.0 # Convert from mK to cm-1
         plot_range = (5.0 * max_fwhm) if max_fwhm > 0 else 5.0
+        
         spectrum_data_loaded = False; num_plots = len(spectrum_data_paths); axes = []
+        
+        # --- Create subplot layout based on user choice ---
         if plot_in_separate_windows and num_plots > 0:
             ax1 = self.figure.add_subplot(1, num_plots, 1); axes.append(ax1)
             for i in range(1, num_plots): axes.append(self.figure.add_subplot(1, num_plots, i + 1, sharey=ax1))
-        else: axes = [self.figure.add_subplot(1, 1, 1)]
+        else:
+            axes = [self.figure.add_subplot(1, 1, 1)]
+
+        # --- Loop through and plot each selected spectrum ---
         for i, spec_path in enumerate(spectrum_data_paths):
             try:
                 plot_axis = axes[i] if plot_in_separate_windows and num_plots > 0 else axes[0]
@@ -367,6 +509,8 @@ class AnalysisWindow(QMainWindow):
                             if i > 0: plt.setp(plot_axis.get_yticklabels(), visible=False)
                         spectrum_data_loaded = True
             except Exception as e: print(f"Error loading spectrum data for plot from {spec_path}: {e}")
+        
+        # --- Add labels and titles appropriate for the plot mode ---
         if spectrum_data_loaded:
             if plot_in_separate_windows and num_plots > 0:
                 self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)'); axes[0].set_ylabel('Intensity')
@@ -376,21 +520,19 @@ class AnalysisWindow(QMainWindow):
         else:
             ax = self.figure.add_subplot(1,1,1)
             ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='darkred')
+        
         self.canvas.draw()
             
-    def _close_extra_plot_windows(self):
-        for window in self.extra_plot_windows: window.close()
-        self.extra_plot_windows = []
-        
     def _clear_plot(self):
+        """Clears the plot canvas and shows a placeholder message."""
         if self.figure.get_axes():
             ax = self.figure.get_axes()[0]; ax.clear()
             ax.text(0.5, 0.5, "Select an upper level and a line to view spectrum", ha='center', va='center', transform=ax.transAxes, fontsize=14, color='gray')
             ax.set_xticks([]); ax.set_yticks([])
             self.canvas.draw()
 
-    # --- MODIFICATION START ---
     def _calculate_clicked(self):
+        """Handles the 'Calculate' button click, runs the analysis, and shows the results dialog."""
         if self.master_line_data_df.empty: QMessageBox.warning(self, "Calculation Error", "No lines loaded."); return
         selected_indexes = self.level_table.selectionModel().selectedRows()
         if not selected_indexes: QMessageBox.warning(self, "Calculation Error", "Please select an upper level."); return
@@ -401,7 +543,6 @@ class AnalysisWindow(QMainWindow):
             self.result_df = self.analysis_module.calculate_branching_fractions(self.master_line_data_df, upper_level_key=upper_level_key, energy_levels_df=self.current_energy_levels_df)
             if not self.result_df.empty:
                 self.save_results_btn.setEnabled(True)
-                # Show results in a pop-up dialog
                 results_dialog = ResultsDisplayDialog(self.result_df, self)
                 results_dialog.exec_()
             else:
@@ -410,6 +551,10 @@ class AnalysisWindow(QMainWindow):
             QMessageBox.critical(self, "Calculation Error", f"An error occurred: {e}"); self.result_df = pd.DataFrame(); self.save_results_btn.setEnabled(False)
             
     def _save_results_clicked(self):
+        """
+        Handles the 'Save Results' button click, creating a structured group
+        in the HDF5 file for reproducibility.
+        """
         if self.result_df.empty or self.master_line_data_df.empty:
             QMessageBox.warning(self, "Save Error", "No results to save."); return
 
@@ -421,46 +566,34 @@ class AnalysisWindow(QMainWindow):
             analysis_group_path = f"{base_group}/{analysis_name}"
             
             try:
-                # Check if the group already exists
+                # Check for and handle overwriting existing data.
                 with h5py.File(self.h5_filepath, 'a') as f:
                     if analysis_group_path in f:
-                        reply = QMessageBox.question(self, "Overwrite Confirmation", 
-                                                     f"An analysis named '{analysis_name}' already exists. Do you want to overwrite it?",
-                                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                        reply = QMessageBox.question(self, "Overwrite Confirmation", f"An analysis named '{analysis_name}' already exists. Do you want to overwrite it?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                         if reply == QMessageBox.No:
                             QMessageBox.information(self, "Save Cancelled", "Save operation cancelled."); return
                         else:
-                            del f[analysis_group_path] # Delete existing group to overwrite
+                            del f[analysis_group_path]
 
-                # Create the groups and save the data
+                # Create groups and save both the input data and the final results for reproducibility.
                 self.h5_manager.create_group_if_not_exists(self.h5_filepath, base_group)
                 self.h5_manager.create_group_if_not_exists(self.h5_filepath, analysis_group_path)
-                
-                # Save both the input data and the final results
                 self.h5_manager.add_pandas_table(self.h5_filepath, analysis_group_path, "calculation_input_data", self.master_line_data_df)
                 self.h5_manager.add_pandas_table(self.h5_filepath, analysis_group_path, "branching_fraction_results", self.result_df)
                 
-                # Attach metadata to the parent group
-                metadata_to_save = {
-                    'analysis_date': date.today().isoformat(),
-                    'source_level_file': self.level_file_combo.currentText(),
-                    'source_previous_ids_file': self.prev_id_combo.currentText(),
-                    'source_linelists': str(self._get_checked_data_paths()),
-                    'wavenumber_tolerance': float(self.tolerance_edit.text()),
-                    'upper_level_key': self.level_key_display.text()
-                }
+                # Attach all relevant parameters as metadata to the analysis group.
+                metadata_to_save = {'analysis_date': date.today().isoformat(), 'source_level_file': self.level_file_combo.currentText(),'source_previous_ids_file': self.prev_id_combo.currentText(), 'source_linelists': str(self._get_checked_data_paths()), 'wavenumber_tolerance': float(self.tolerance_edit.text()), 'upper_level_key': self.level_key_display.text()}
                 self.h5_manager.attach_metadata_to_group(self.h5_filepath, analysis_group_path, metadata_to_save)
                 
                 QMessageBox.information(self, "Save Complete", f"Analysis saved to HDF5 at:\n{analysis_group_path}")
-                # The main window's tree will refresh when this analysis window is closed.
                 
             except Exception as e:
                 QMessageBox.critical(self, "HDF5 Save Error", f"Failed to save results:\n{e}")
         else:
             QMessageBox.information(self, "Save Cancelled", "Save operation cancelled.")
-    # --- MODIFICATION END ---
             
     def _run_debug_diagnostics(self):
+        """Runs a series of checks on the current data state and shows a report."""
         report = []
         report.append("--- 1. Master DataFrames ---")
         if self.current_energy_levels_df.empty: report.append("WARNING: Energy Levels DataFrame is EMPTY.")
@@ -488,6 +621,7 @@ class AnalysisWindow(QMainWindow):
         self._show_debug_report(report)
         
     def _show_debug_report(self, report_lines):
+        """Displays the debug report in a simple dialog."""
         dialog = QDialog(self); dialog.setWindowTitle("Debug Diagnostics Report"); dialog.setMinimumSize(700, 500)
         layout = QVBoxLayout(dialog); report_text = QTextEdit(); report_text.setReadOnly(True)
         report_text.setFont(QFont("Monospace", 10)); report_text.setText("\n".join(report_lines))
