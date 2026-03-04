@@ -1,14 +1,13 @@
 # analysis_window.py (FULLY DOCUMENTED)
-
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QTableView, QTreeView, QSplitter, QDockWidget, QPushButton, QLineEdit,
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
-    QTableWidget, QTableWidgetItem, QMenu
+    QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader
 )
-from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel
-from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush
+from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel, QRect # <--- Added QRect
+from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush, QPainter 
 
 import pandas as pd
 import numpy as np
@@ -67,6 +66,23 @@ class LineDataTableModel(PandasTableModel):
     def __init__(self, data: pd.DataFrame, parent=None):
         super().__init__(data, parent)
 
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        """Intercepts column names to trigger the multi-level header."""
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            col_name = str(self.df.columns[section])
+            
+            # Inject newlines so our custom header splits them!
+            if col_name == 'Mean Intensity':
+                return 'Mean\nIntensity'
+            if col_name == 'Mean Uncertainty':
+                return 'Mean\nUncertainty'
+                
+            return col_name
+            
+        # Fall back to the default behavior for row numbers, etc.
+        return super().headerData(section, orientation, role)
+ 
+
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         """Overrides the base data method to provide custom formatting."""
         if not index.isValid() or role != Qt.DisplayRole:
@@ -102,6 +118,132 @@ class LineDataTableModel(PandasTableModel):
     def flags(self, index: QModelIndex):
         """Returns the item flags for the given index. This table is read-only."""
         return super().flags(index)
+
+class MultiLevelHeaderView(QHeaderView):
+    """
+    A custom QHeaderView that supports spanning multi-level headers.
+    It hooks into the native paintSection method to draw filled backgrounds
+    while seamlessly spanning text across adjacent grouped columns.
+    """
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setFixedHeight(50)  # Make it taller to fit two lines of text cleanly
+
+    
+    def sectionSizeFromContents(self, logicalIndex):
+        """
+        Overrides the default size calculation to account for our custom drawn text.
+        """
+        size = super().sectionSizeFromContents(logicalIndex)
+        
+        model = self.model()
+        if not model:
+            return size
+            
+        header_text = str(model.headerData(logicalIndex, self.orientation(), Qt.DisplayRole) or "")
+        parts = header_text.split('\n')
+        
+        font_metrics = self.fontMetrics()
+        max_text_width = 0
+        
+        for part in parts:
+            text_width = font_metrics.boundingRect(part).width()
+            if text_width > max_text_width:
+                max_text_width = text_width
+                
+        # Add 5 pixels of padding
+        required_header_width = max_text_width + 5
+        
+        # Return whichever is wider: the table data or our custom header text
+        size.setWidth(max(size.width(), required_header_width))
+        
+        return size
+ 
+    def paintSection(self, painter, rect, logicalIndex):
+        model = self.model()
+        if not model:
+            super().paintSection(painter, rect, logicalIndex)
+            return
+
+        header_text = str(model.headerData(logicalIndex, self.orientation(), Qt.DisplayRole) or "")
+        parts = header_text.split('\n')
+
+        # If it's a standard single-line header (like 'wavenumber' or 'intensity')
+        if len(parts) == 1:
+            super().paintSection(painter, rect, logicalIndex)
+            return
+
+        # --- Multi-level header logic ---
+        top_text, bottom_text = parts[0], parts[1]
+        visual_index = self.visualIndex(logicalIndex)
+
+        # 1. Look left to find where this top-level group starts
+        left_v_index = visual_index
+        while left_v_index > 0:
+            prev_l_index = self.logicalIndex(left_v_index - 1)
+            prev_text = str(model.headerData(prev_l_index, self.orientation(), Qt.DisplayRole) or "")
+            if prev_text.startswith(top_text + '\n'):
+                left_v_index -= 1
+            else:
+                break
+                
+        # 2. Look right to find where this top-level group ends
+        right_v_index = visual_index
+        while right_v_index < self.count() - 1:
+            next_l_index = self.logicalIndex(right_v_index + 1)
+            next_text = str(model.headerData(next_l_index, self.orientation(), Qt.DisplayRole) or "")
+            if next_text.startswith(top_text + '\n'):
+                right_v_index += 1
+            else:
+                break
+
+        # 3. Safely calculate coordinates relative to the current cell (fixes scrolling bugs)
+        left_offset = sum(self.sectionSize(self.logicalIndex(i)) for i in range(left_v_index, visual_index))
+        span_x = rect.left() - left_offset
+        span_width = sum(self.sectionSize(self.logicalIndex(i)) for i in range(left_v_index, right_v_index + 1))
+        
+        half_height = rect.height() // 2
+
+        # Create the bounding boxes for the top and bottom sections
+        top_rect = QRect(span_x, rect.top(), span_width, half_height)
+        bottom_rect = QRect(rect.left(), rect.top() + half_height, rect.width(), rect.height() - half_height)
+
+        # --- Painting ---
+        painter.save()
+        
+        # Clip the painter to the current column's boundary to create the seamless merge effect
+        painter.setClipRect(rect)
+
+        opt = QStyleOptionHeader()
+        self.initStyleOption(opt)
+        opt.section = logicalIndex
+
+        # Paint the Top Spanning Background (leaving text blank to handle OS quirks)
+        opt.rect = top_rect
+        opt.text = "" 
+        self.style().drawControl(QStyle.CE_HeaderSection, opt, painter, self)
+
+        # Paint the Bottom Individual Background
+        opt.rect = bottom_rect
+        opt.text = ""
+        self.style().drawControl(QStyle.CE_HeaderSection, opt, painter, self)
+
+        # --- Explicitly Draw Text Manually ---
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        font = self.font()
+        # Optional: Set bold to match standard header styles on some OSs
+        # font.setBold(True) 
+        painter.setFont(font)
+        
+        # Center the Spectrum Name perfectly across the combined width
+        painter.drawText(top_rect, Qt.AlignCenter | Qt.TextShowMnemonic, top_text)
+        
+        # Center the 'Intensity' or 'SNR' in the bottom row
+        painter.drawText(bottom_rect, Qt.AlignCenter | Qt.TextShowMnemonic, bottom_text)
+
+        painter.restore()
+
+
 
 class ResultsDisplayDialog(QDialog):
     """A simple dialog window to display a DataFrame in a QTableView, used for showing results."""
@@ -228,8 +370,20 @@ class AnalysisWindow(QMainWindow):
         self.central_splitter = QSplitter(Qt.Vertical)
         
         # The main table for displaying aggregated line data
-        self.line_data_table = QTableView(); self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected)
+        self.line_data_table = QTableView()
+        self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        
+        # --- NEW CODE: Apply the custom multi-level header ---
+        self.custom_header = MultiLevelHeaderView(Qt.Horizontal, self.line_data_table)
+       
+        # Make sure the user can still drag to resize them if needed
+        self.custom_header.setSectionResizeMode(QHeaderView.Interactive)
+        
+        self.line_data_table.setHorizontalHeader(self.custom_header)
+        self.line_data_table.setAlternatingRowColors(True)
+        self.line_data_table.clicked.connect(self._on_line_selected)
+
         self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers) # Table is read-only
         self.line_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu); self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
@@ -248,10 +402,27 @@ class AnalysisWindow(QMainWindow):
         """Creates and shows a context menu when the line data table is right-clicked."""
         index = self.line_data_table.indexAt(position)
         if not index.isValid(): return
+        
         menu = QMenu()
         normalize_action = menu.addAction("Set as Intensity Reference (Normalize to 1000)")
+        
+        # Add a sub-menu to transfer calibration
+        menu.addSeparator()
+        spectrum_names = sorted(list(set([col.split('\n')[0] for col in self.master_line_data_df.columns if '\n' in col])))
+        transfer_menu = menu.addMenu("Transfer Calibration To...")
+        
+        transfer_actions = {}
+        for spec in spectrum_names:
+            action = transfer_menu.addAction(f"Spectrum: {spec}")
+            transfer_actions[action] = spec
+
         action = menu.exec_(self.line_data_table.viewport().mapToGlobal(position))
-        if action == normalize_action: self._normalize_intensities(index.row())
+        
+        if action == normalize_action: 
+            self._normalize_intensities(index.row())
+        elif action in transfer_actions:
+            target_spectrum = transfer_actions[action]
+            self._transfer_calibration(index.row(), target_spectrum)
 
     def _normalize_intensities(self, reference_line_row: int):
         """
@@ -273,6 +444,7 @@ class AnalysisWindow(QMainWindow):
             # Update the table view with the new data.
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
+            self._format_table_columns() 
             
             # Restore the user's selection and update the plot for a smooth workflow.
             new_index_to_select = model.index(reference_line_row, 0)
@@ -285,6 +457,43 @@ class AnalysisWindow(QMainWindow):
             ref_level_key = self.master_line_data_df.iloc[reference_line_row].get('lower_level_key', 'Unknown')
             QMessageBox.information(self, "Success", f"Intensities have been normalized using '{ref_level_key}' as the reference.")
         except Exception as e: QMessageBox.critical(self, "Normalization Error", f"An error occurred during normalization:\n{e}")
+
+    def _transfer_calibration(self, transfer_line_row: int, target_spectrum: str):
+        """
+        Handles the transfer calibration action from the context menu.
+        """
+        if self.master_line_data_df.empty: 
+            QMessageBox.warning(self, "Error", "No data loaded.")
+            return
+            
+        try:
+            # Call the analysis function to re-normalize the target spectrum
+            updated_df = self.analysis_module.transfer_calibration(
+                self.master_line_data_df, transfer_line_row, target_spectrum
+            )
+            self.master_line_data_df = updated_df
+            
+            # Recalculate the overall weighted averages
+            self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            
+            # Update the table view
+            model = LineDataTableModel(self.master_line_data_df)
+            self.line_data_table.setModel(model)
+            self._format_table_columns()
+            
+            # Restore the user's selection
+            new_index_to_select = model.index(transfer_line_row, 0)
+            if new_index_to_select.isValid():
+                self.line_data_table.setCurrentIndex(new_index_to_select)
+                selection_model = self.line_data_table.selectionModel()
+                selection_model.select(new_index_to_select, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                self._on_line_selected(new_index_to_select)
+
+            ref_level_key = self.master_line_data_df.iloc[transfer_line_row].get('lower_level_key', 'Unknown')
+            QMessageBox.information(self, "Success", f"Calibration transferred to '{target_spectrum}' using '{ref_level_key}' as the transfer line.")
+            
+        except Exception as e: 
+            QMessageBox.critical(self, "Transfer Error", f"An error occurred during calibration transfer:\n{e}")
 
     def _populate_data_source_table(self):
         """Scans the HDF5 file and populates the data source table with available items."""
@@ -385,6 +594,24 @@ class AnalysisWindow(QMainWindow):
         # This is the primary trigger to build the main data table.
         self._populate_line_data_table(selected_level_data['key'])
         
+    def _format_table_columns(self):
+        """Helper method to explicitly resize the width of all columns."""
+        model = self.line_data_table.model()
+        if not model: 
+            return
+            
+        for col in range(model.columnCount()):
+            header_text = str(model.headerData(col, Qt.Horizontal, Qt.DisplayRole))
+            
+            if col in [0, 1, 2]:  # wavenumber, lower_level_key, intensity
+                self.line_data_table.resizeColumnToContents(col)
+            elif "Mean" in header_text: 
+                # Catch both 'Mean Intensity' and 'Mean Uncertainty'
+                self.line_data_table.resizeColumnToContents(col)
+            else:
+                # Everything else (the Spectrum Intensity & SNR columns)
+                self.line_data_table.setColumnWidth(col, 55)
+
     def _populate_line_data_table(self, upper_level_key: str):
         """
         The core data aggregation and display function.
@@ -418,14 +645,16 @@ class AnalysisWindow(QMainWindow):
             # 3. Display the final table.
             model = LineDataTableModel(self.master_line_data_df)
             self.line_data_table.setModel(model)
-            self.line_data_table.horizontalHeader().setFixedHeight(40)
+            self._format_table_columns() 
             self._clear_plot()
             current_height = self.central_splitter.height()
             self.central_splitter.setSizes([current_height // 2, current_height // 2])
+
         except Exception as e:
             QMessageBox.critical(self, "Analysis Error", f"An error in _populate_line_data_table: {e}")
             self.line_data_table.setModel(None); self._clear_plot()
-            
+
+           
     def _clear_level_details(self):
         """Clears the text from the level detail display boxes."""
         self.level_key_display.clear(); self.level_energy_display.clear(); self.level_j_display.clear(); self.level_parity_display.clear(); self.level_lifetime_display.clear()
@@ -483,12 +712,13 @@ class AnalysisWindow(QMainWindow):
         
         spectrum_data_loaded = False; num_plots = len(spectrum_data_paths); axes = []
         
-        # --- Create subplot layout based on user choice ---
+# --- Create subplot layout based on user choice ---
         if plot_in_separate_windows and num_plots > 0:
-            ax1 = self.figure.add_subplot(1, num_plots, 1); axes.append(ax1)
-            for i in range(1, num_plots): axes.append(self.figure.add_subplot(1, num_plots, i + 1, sharey=ax1))
+            # Create subplots WITHOUT 'sharey' so they scale independently
+            for i in range(num_plots):
+                axes.append(self.figure.add_subplot(1, num_plots, i + 1))
         else:
-            axes = [self.figure.add_subplot(1, 1, 1)]
+            axes =[self.figure.add_subplot(1, 1, 1)]
 
         # --- Loop through and plot each selected spectrum ---
         for i, spec_path in enumerate(spectrum_data_paths):
@@ -506,7 +736,6 @@ class AnalysisWindow(QMainWindow):
                         plot_axis.axvline(target_wavenumber, color='red', linestyle='--'); plot_axis.grid(True)
                         if plot_in_separate_windows:
                             plot_axis.set_title(spectrum_name, fontsize=10)
-                            if i > 0: plt.setp(plot_axis.get_yticklabels(), visible=False)
                         spectrum_data_loaded = True
             except Exception as e: print(f"Error loading spectrum data for plot from {spec_path}: {e}")
         
@@ -543,8 +772,14 @@ class AnalysisWindow(QMainWindow):
             self.result_df = self.analysis_module.calculate_branching_fractions(self.master_line_data_df, upper_level_key=upper_level_key, energy_levels_df=self.current_energy_levels_df)
             if not self.result_df.empty:
                 self.save_results_btn.setEnabled(True)
-                results_dialog = ResultsDisplayDialog(self.result_df, self)
-                results_dialog.exec_()
+                
+                # --- CHANGED CODE: Make the dialog non-blocking (modeless) ---
+                # Save it to 'self' so the garbage collector doesn't instantly destroy it
+                self.results_dialog = ResultsDisplayDialog(self.result_df, self)
+                self.results_dialog.setModal(False) # Ensure it doesn't block the main window
+                self.results_dialog.show()          # Show it instead of executing it
+                # -------------------------------------------------------------
+                
             else:
                 QMessageBox.warning(self, "Calculation Error", "Calculation returned no results."); self.save_results_btn.setEnabled(False)
         except Exception as e:

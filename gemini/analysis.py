@@ -324,3 +324,86 @@ def normalize_intensities_by_reference_line(
             print(f"Warning: Reference line has no valid intensity in '{spectrum_name}'. Skipping normalization for this spectrum.")
             
     return normalized_df
+
+def transfer_calibration(df: pd.DataFrame, transfer_line_index: int, target_spectrum: str) -> pd.DataFrame:
+    """
+    Transfers the intensity calibration to a target spectrum that lacks the primary reference line.
+    
+    This calculates the weighted average intensity of the selected 'transfer line' across all 
+    OTHER spectra. It then scales the entire target spectrum so its transfer line intensity 
+    matches this average, and correctly propagates the added uncertainty to all lines in the 
+    target spectrum.
+    """
+    if df.empty or not (0 <= transfer_line_index < len(df)):
+        return df
+        
+    df_out = df.copy()
+    spectrum_names = sorted(list(set([col.split('\n')[0] for col in df_out.columns if '\n' in col])))
+    
+    if target_spectrum not in spectrum_names:
+        raise ValueError(f"Target spectrum '{target_spectrum}' not found.")
+        
+    # Get the DataFrame index label for the selected row
+    transfer_label = df_out.index[transfer_line_index]
+    
+    sum_W = 0.0
+    sum_IW = 0.0
+    
+    # 1. Calculate weighted average from ALL OTHER spectra
+    for spec in spectrum_names:
+        if spec == target_spectrum:
+            continue
+            
+        i_col = f'{spec}\nIntensity'
+        snr_col = f'{spec}\nSNR'
+        
+        if i_col not in df_out.columns or snr_col not in df_out.columns:
+            continue
+            
+        I_S = pd.to_numeric(df_out.at[transfer_label, i_col], errors='coerce')
+        SNR_S = pd.to_numeric(df_out.at[transfer_label, snr_col], errors='coerce')
+        
+        # If the other spectrum has a valid measurement for this line
+        if pd.notna(I_S) and pd.notna(SNR_S) and I_S > 0 and SNR_S > 0:
+            W_S = min(SNR_S**2, 555)  # Cap max weight (1 / 0.06^2/2)
+            sum_W += W_S
+            sum_IW += I_S * W_S
+            
+    if sum_W == 0:
+        raise ValueError("No valid data in other spectra to compute a weighted average for this transfer line.")
+        
+    avg_I = sum_IW / sum_W
+    
+    # 2. Extract target spectrum transfer line properties
+    target_i_col = f'{target_spectrum}\nIntensity'
+    target_snr_col = f'{target_spectrum}\nSNR'
+    
+    I_target = pd.to_numeric(df_out.at[transfer_label, target_i_col], errors='coerce')
+    SNR_target = pd.to_numeric(df_out.at[transfer_label, target_snr_col], errors='coerce')
+    
+    if pd.isna(I_target) or I_target <= 0 or pd.isna(SNR_target) or SNR_target <= 0:
+        raise ValueError(f"The target spectrum '{target_spectrum}' does not have a valid measurement for the selected transfer line.")
+        
+    # 3. Calculate scaling factor and new transfer uncertainty
+    scale = avg_I / I_target
+    unc_renorm = ( (SNR_target**2) + sum_W )**(-0.5)
+    
+    # 4. Apply to the target spectrum
+    for r_label in df_out.index:
+        I_old = pd.to_numeric(df_out.at[r_label, target_i_col], errors='coerce')
+        SNR_old = pd.to_numeric(df_out.at[r_label, target_snr_col], errors='coerce')
+        
+        if pd.notna(I_old) and I_old > 0:
+            df_out.at[r_label, target_i_col] = I_old * scale
+            
+        if pd.notna(SNR_old) and SNR_old > 0:
+            # If it's the transfer level, SNR = 1/unc_renorm
+            if r_label == transfer_label:
+                df_out.at[r_label, target_snr_col] = 1.0 / unc_renorm
+            # Otherwise add uncertainties to unc of ref level
+            else:
+                U_old = 1.0 / SNR_old
+                U_new = (U_old**2 + unc_renorm**2)**0.5
+                df_out.at[r_label, target_snr_col] = 1.0 / U_new
+                
+    return df_out
