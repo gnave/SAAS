@@ -86,6 +86,7 @@ def aggregate_observed_data_for_display(h5_filepath: str,
                 exp_df_subset.sort_values('wavenumber_numeric_merge_key', inplace=True)
                 
                 # Perform the 'as-of' merge on the single, unambiguous key.
+
                 final_df = pd.merge_asof(
                     final_df,
                     exp_df_subset,
@@ -160,11 +161,20 @@ def add_weighted_averages(df: pd.DataFrame) -> pd.DataFrame:
         
         # Weight is based on SNR^2 (the inverse of fractional uncertainty squared).
         weights = snrs ** 2
+
+
+        # --- NEW: Exclude lines by forcing their weight to 0 ---
+        excluded_col = f'{name}\nExcluded'
+        if excluded_col in df_out.columns:
+            excluded_mask = df_out[excluded_col].fillna(False).astype(bool)
+            weights = weights.mask(excluded_mask, 0.0)
+
         weights = weights.fillna(0)
         
         # Apply the maximum weight cap to account for systematic uncertainty.
         weights = weights.clip(upper=max_weight)
-        
+#        print(name,intensities,weights)
+
         sum_of_weights += weights
         sum_of_val_x_weight += intensities.multiply(weights).fillna(0)
         
@@ -255,20 +265,12 @@ def run_and_save_wavenumber_match(h5_filepath, exp_path, ids_path, tolerance, ou
 
 def calculate_branching_fractions(lines_for_calculation: pd.DataFrame, 
                                   upper_level_key: str,
-                                  energy_levels_df: pd.DataFrame) -> pd.DataFrame:
+                                  energy_levels_df: pd.DataFrame,
+                                  calculations_df: pd.DataFrame = None,
+                                  wavenumber_tolerance: float = 0.02) -> pd.DataFrame:
     """
-    Calculates the branching fraction for each line based on mean intensities.
-
-    Args:
-        lines_for_calculation: A DataFrame containing the lines from a single
-                               upper level, including a 'Mean Intensity' column.
-        upper_level_key: The identifier for the upper energy level.
-        energy_levels_df: The master DataFrame of all energy levels, used to
-                          potentially include other atomic data in the future.
-
-    Returns:
-        A DataFrame containing the final results, including the calculated
-        'Branching Fraction' for each line.
+    Calculates branching fractions, estimates an unobserved residual from theoretical 
+    transition probabilities, and calculates uncertainties according to Sikström et al.
     """
     if lines_for_calculation.empty: return pd.DataFrame()
     df = lines_for_calculation.copy()
@@ -276,16 +278,140 @@ def calculate_branching_fractions(lines_for_calculation: pd.DataFrame,
         
     df.dropna(subset=['Mean Intensity'], inplace=True)
     if df.empty: return pd.DataFrame()
-        
-    total_intensity = df['Mean Intensity'].sum()
+
+    # --- Forcefully clean the target key of any asterisks or spaces ---
+    clean_target_key = str(upper_level_key).replace('*', '').strip()
+
+    # 1. Fetch the Lifetime for the upper level
+    lifetime = 0.0
+    if not energy_levels_df.empty and 'key' in energy_levels_df.columns and 'lifetime' in energy_levels_df.columns:
+        energy_levels_df['key_clean'] = energy_levels_df['key'].astype(str).str.replace('*', '', regex=False).str.strip()
+        matches = energy_levels_df[energy_levels_df['key_clean'] == clean_target_key]
+        if not matches.empty:
+            try:
+                lifetime = float(matches.iloc[0]['lifetime'])
+            except ValueError:
+                pass
+
+    print(f"\n--- Residual Calculation for Level: '{clean_target_key}' ---")
+    print(f"Lifetime: {lifetime} ns")
+
+    # 2. Calculate the Residual from Theoretical Calculations
+    frac_resid = 0.0
+    unobserved_A_sum = 0.0
+    matched_theo_A = {}
     
-    if total_intensity > 0:
-        df['Branching Fraction'] = df['Mean Intensity'] / total_intensity
+    if calculations_df is not None and not calculations_df.empty and 'upper_level_key' in calculations_df.columns:
+        # Sanitize keys for consistent matching (removing asterisks and whitespace)
+        calculations_df['upper_level_key_clean'] = calculations_df['upper_level_key'].astype(str).str.replace('*', '', regex=False).str.strip()
+        theo_lines = calculations_df[calculations_df['upper_level_key_clean'] == clean_target_key].copy()
+        
+        print(f"Found {len(theo_lines)} theoretical lines for this level in the Calculations file.")
+
+        if not theo_lines.empty and 'wavenumber' in theo_lines.columns and 'transition_probability' in theo_lines.columns:
+            theo_lines['wavenumber'] = pd.to_numeric(theo_lines['wavenumber'], errors='coerce')
+            theo_lines['transition_probability'] = pd.to_numeric(theo_lines['transition_probability'], errors='coerce')
+            theo_lines.dropna(subset=['wavenumber', 'transition_probability'], inplace=True)
+            
+            observed_wns = pd.to_numeric(df['wavenumber'], errors='coerce').dropna().values
+            
+            for idx, row in theo_lines.iterrows():
+                t_wn = row['wavenumber']
+                t_A = row['transition_probability']
+                
+                # Check if this theoretical line was observed
+                diffs = np.abs(observed_wns - t_wn)
+                if len(diffs) > 0 and np.min(diffs) <= wavenumber_tolerance:
+                    # It's an observed line, store the A-value for display
+                    best_match_idx = np.argmin(diffs)
+                    matched_wn = observed_wns[best_match_idx]
+                    matched_theo_A[matched_wn] = t_A
+                else:
+                    # Unobserved line: add to residual sum
+                    unobserved_A_sum += t_A
+                    print(f"  -> Unobserved Residual Line: Wavenumber = {t_wn:>10.3f} cm⁻¹ | Trans. Prob. = {t_A:>10.4f} (10⁶ s⁻¹)")
+                    
+            if lifetime > 0:
+                # Assumes Transition Probability is in 10^6 s^-1 and lifetime in ns
+                # (A * 10^6) * (tau * 10^-9) = A * tau / 1000
+                frac_resid = unobserved_A_sum * lifetime / 1000.0
+                print(f"Total Unobserved A-value sum: {unobserved_A_sum:.4f} (10⁶ s⁻¹)")
+                print(f"Calculated Residual Fraction: {frac_resid * 100.0:.3f} %")
+            else:
+                print("Warning: Lifetime is 0. Cannot calculate residual fraction.")
+    else:
+        print("Warning: No calculations dataframe provided, or missing 'upper_level_key' column.")
+    print("---------------------------------------------------\n")
+
+    # 3. Calculate BF and Uncertainties
+    # Excluded lines (or NaN) default to 0.0 intensity for the sum
+    valid_intensities = pd.to_numeric(df['Mean Intensity'], errors='coerce').fillna(0.0)
+    base_total_int = valid_intensities.sum()
+    
+    # Scale total intensity to account for the missing residual branches
+    total_int = base_total_int * (1.0 + frac_resid)
+    
+    if total_int > 0:
+        df['Branching Fraction'] = valid_intensities / total_int
+        
+        fractional_unc = pd.to_numeric(df['Mean Uncertainty'], errors='coerce').fillna(0.0)
+        BF_array = df['Branching Fraction'].values
+        
+        # Calculate the BFsq term (Sum of BF_k^2 * rel_var_k)
+        BFsq = np.sum( (BF_array ** 2) * (fractional_unc ** 2) )
+        
+        # Add a 50% relative uncertainty estimate for the residual correction itself
+        BFsq += (frac_resid ** 2) * 0.25 
+        
+        df['BF Uncertainty (%)'] = 0.0
+        df['Trans. Prob. (10^6 s^-1)'] = 0.0
+        df['Trans. Prob. Unc. (%)'] = 0.0
+        df['Theoretical Trans. Prob.'] = np.nan
+        
+        life_unc_frac = 0.0 # Assuming 0 for now unless added to energy levels schema
+        
+        for index, row in df.iterrows():
+            BF = row['Branching Fraction']
+            delta_I = fractional_unc.get(index, 0.0)
+            
+            # Sikström Eq 7 for variance
+            rel_var_BF = (delta_I ** 2) * (1.0 - 2.0 * BF) + BFsq
+            rel_var_BF = max(rel_var_BF, 0.0) # Prevent float rounding errors below 0
+            
+            bf_unc_frac = np.sqrt(rel_var_BF)
+            df.at[index, 'BF Uncertainty (%)'] = bf_unc_frac * 100.0
+            
+            if lifetime > 0:
+                A_val = (1000.0 * BF) / lifetime
+                unc_A_frac = np.sqrt(rel_var_BF + life_unc_frac**2)
+                df.at[index, 'Trans. Prob. (10^6 s^-1)'] = A_val
+                df.at[index, 'Trans. Prob. Unc. (%)'] = unc_A_frac * 100.0
+                
+            # Match back the theoretical A-value for the table display
+            wn = pd.to_numeric(row['wavenumber'], errors='coerce')
+            if not pd.isna(wn):
+                closest_theo = None
+                min_diff = 1e9
+                for t_wn, t_A in matched_theo_A.items():
+                    if abs(t_wn - wn) < min_diff and abs(t_wn - wn) <= wavenumber_tolerance:
+                        min_diff = abs(t_wn - wn)
+                        closest_theo = t_A
+                if closest_theo is not None:
+                    df.at[index, 'Theoretical Trans. Prob.'] = closest_theo
     else:
         df['Branching Fraction'] = 0.0
 
-    result_cols = ['wavenumber', 'lower_level_key', 'Mean Intensity', 'Mean Uncertainty', 'Branching Fraction']
+    # Format final columns and attach metadata
+    result_cols =['wavenumber', 'lower_level_key', 'Mean Intensity', 'Mean Uncertainty', 
+                   'Branching Fraction', 'BF Uncertainty (%)', 'Trans. Prob. (10^6 s^-1)', 
+                   'Trans. Prob. Unc. (%)', 'Theoretical Trans. Prob.']
+                   
     results = df[[col for col in result_cols if col in df.columns]].copy()
+    
+    # Store metadata in the DataFrame so the Results Dialog can display it
+    results.attrs['residual_fraction'] = frac_resid
+    results.attrs['lifetime'] = lifetime
+    
     return results
 
 def normalize_intensities_by_reference_line(
@@ -353,7 +479,13 @@ def transfer_calibration(df: pd.DataFrame, transfer_line_index: int, target_spec
     for spec in spectrum_names:
         if spec == target_spectrum:
             continue
-            
+
+        # --- NEW: Ignore excluded lines for transfer calibration ---
+        excluded_col = f'{spec}\nExcluded'
+        if excluded_col in df_out.columns and df_out.at[transfer_label, excluded_col] == True:
+            continue
+        # ---------------------------------------------------------
+        
         i_col = f'{spec}\nIntensity'
         snr_col = f'{spec}\nSNR'
         

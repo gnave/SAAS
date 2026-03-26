@@ -82,14 +82,31 @@ class LineDataTableModel(PandasTableModel):
         # Fall back to the default behavior for row numbers, etc.
         return super().headerData(section, orientation, role)
  
-
     def data(self, index: QModelIndex, role=Qt.DisplayRole):
         """Overrides the base data method to provide custom formatting."""
-        if not index.isValid() or role != Qt.DisplayRole:
+        if not index.isValid():
             return None
+
+        col_name = str(self.df.columns[index.column()])
+        
+        # --- NEW: Render excluded cells as grey text ---
+        if role == Qt.ForegroundRole:
+            if '\n' in col_name:
+                spectrum_name = col_name.split('\n')[0]
+                excluded_col = f"{spectrum_name}\nExcluded"
+                if excluded_col in self.df.columns:
+                    if self.df.iloc[index.row()].get(excluded_col) == True:
+                        return QBrush(Qt.gray)
+            return None
+        # -----------------------------------------------
+
+        if role != Qt.DisplayRole:
+            return None
+
 
         value = self.df.iloc[index.row(), index.column()]
         col_name = str(self.df.columns[index.column()])
+        
 
         # Rule 1: Always treat the original 'intensity', 'wavenumber', and 'key' columns as text
         # to preserve their original formatting from the source file.
@@ -244,25 +261,35 @@ class MultiLevelHeaderView(QHeaderView):
         painter.restore()
 
 
-
 class ResultsDisplayDialog(QDialog):
-    """A simple dialog window to display a DataFrame in a QTableView, used for showing results."""
+    """A dialog window to display a DataFrame in a QTableView, used for showing results."""
     def __init__(self, df, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Calculation Results")
-        self.setMinimumSize(800, 500)
+        self.setMinimumSize(1000, 500) # Slightly wider for the new columns
         
         layout = QVBoxLayout(self)
         self.table_view = QTableView()
         self.table_view.setModel(PandasTableModel(df))
-        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
-        layout.addWidget(QLabel("Branching Fraction Calculation Results:"))
+        # --- NEW: Extract metadata to show residuals and lifetime ---
+        resid = df.attrs.get('residual_fraction', 0.0) * 100.0
+        lifetime = df.attrs.get('lifetime', 0.0)
+        
+        header_text = f"<b>Branching Fraction Calculation Results</b><br>" \
+                      f"Lifetime: {lifetime:.3f} ns | Estimated Residual (Unobserved): {resid:.3f} %"
+        
+        header_label = QLabel(header_text)
+        header_label.setTextFormat(Qt.RichText)
+        layout.addWidget(header_label)
+        
         layout.addWidget(self.table_view)
         
         button_box = QDialogButtonBox(QDialogButtonBox.Ok)
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
+
 
 class PlotPopupDialog(QDialog):
     """A generic dialog for displaying a Matplotlib plot in a separate window."""
@@ -406,23 +433,39 @@ class AnalysisWindow(QMainWindow):
         menu = QMenu()
         normalize_action = menu.addAction("Set as Intensity Reference (Normalize to 1000)")
         
-        # Add a sub-menu to transfer calibration
-        menu.addSeparator()
-        spectrum_names = sorted(list(set([col.split('\n')[0] for col in self.master_line_data_df.columns if '\n' in col])))
-        transfer_menu = menu.addMenu("Transfer Calibration To...")
+        # Get only actual spectrum names (ignoring "Mean" columns)
+        spectrum_names = sorted(list(set([col.split('\n')[0] for col in self.master_line_data_df.columns if '\nSNR' in col])))
         
+        # --- Transfer Calibration Submenu ---
+        menu.addSeparator()
+        transfer_menu = menu.addMenu("Transfer Calibration To...")
         transfer_actions = {}
         for spec in spectrum_names:
             action = transfer_menu.addAction(f"Spectrum: {spec}")
             transfer_actions[action] = spec
+
+        # --- Toggle Exclusion Submenu ---
+        menu.addSeparator()
+        exclude_menu = menu.addMenu("Toggle Line Exclusion In...")
+        exclude_actions = {}
+        for spec in spectrum_names:
+            is_excluded = False
+            excluded_col = f"{spec}\nExcluded"
+            if excluded_col in self.master_line_data_df.columns:
+                is_excluded = bool(self.master_line_data_df.iloc[index.row()].get(excluded_col, False))
+                
+            status_text = " (Currently Excluded)" if is_excluded else ""
+            action = exclude_menu.addAction(f"Spectrum: {spec}{status_text}")
+            exclude_actions[action] = spec
 
         action = menu.exec_(self.line_data_table.viewport().mapToGlobal(position))
         
         if action == normalize_action: 
             self._normalize_intensities(index.row())
         elif action in transfer_actions:
-            target_spectrum = transfer_actions[action]
-            self._transfer_calibration(index.row(), target_spectrum)
+            self._transfer_calibration(index.row(), transfer_actions[action])
+        elif action in exclude_actions:
+            self._toggle_exclusion(index.row(), exclude_actions[action])
 
     def _normalize_intensities(self, reference_line_row: int):
         """
@@ -494,6 +537,32 @@ class AnalysisWindow(QMainWindow):
             
         except Exception as e: 
             QMessageBox.critical(self, "Transfer Error", f"An error occurred during calibration transfer:\n{e}")
+
+    def _toggle_exclusion(self, row_index: int, target_spectrum: str):
+        """Toggles the excluded state of a line in a specific spectrum."""
+        excluded_col = f"{target_spectrum}\nExcluded"
+        
+        # Create the hidden tracking column if it doesn't exist yet
+        if excluded_col not in self.master_line_data_df.columns:
+            self.master_line_data_df[excluded_col] = False
+            
+        # Flip the boolean state
+        current_status = bool(self.master_line_data_df.iloc[row_index].get(excluded_col, False))
+        self.master_line_data_df.at[self.master_line_data_df.index[row_index], excluded_col] = not current_status
+        
+        # Recalculate means (this will now force the excluded weight to 0)
+        self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+        
+        # Refresh the table and plot
+        model = LineDataTableModel(self.master_line_data_df)
+        self.line_data_table.setModel(model)
+        self._format_table_columns()
+        
+        new_index_to_select = model.index(row_index, 0)
+        if new_index_to_select.isValid():
+            self.line_data_table.setCurrentIndex(new_index_to_select)
+            self.line_data_table.selectionModel().select(new_index_to_select, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+            self._on_line_selected(new_index_to_select)
 
     def _populate_data_source_table(self):
         """Scans the HDF5 file and populates the data source table with available items."""
@@ -677,17 +746,18 @@ class AnalysisWindow(QMainWindow):
             try:
                 # Wavenumber must be converted to float for plotting.
                 wavenumber_float = float(wavenumber)
-                self._update_plot(wavenumber_float, self._get_checked_data_paths())
+                # CHANGE: Pass line_data so the plotter knows if it's excluded
+                self._update_plot(wavenumber_float, self._get_checked_data_paths(), line_data)
             except (ValueError, TypeError): self._clear_plot()
         else: self._clear_plot()
             
-    def _update_plot(self, target_wavenumber: float, all_checked_paths: list):
+    def _update_plot(self, target_wavenumber: float, all_checked_paths: list, line_data=None):
         """
         Draws the spectral data for a selected line in the Matplotlib canvas.
 
         This function supports two modes based on the checkbox state:
         1.  Overlay Mode: All selected spectra are plotted on a single axis.
-        2.  Separate Mode: Each spectrum is plotted on its own subplot with a shared Y-axis.
+        2.  Separate Mode: Each spectrum is plotted on its own subplot with an independent Y-axis.
         """
         self.figure.clear()
         plot_in_separate_windows = self.separate_plots_checkbox.isChecked()
@@ -695,7 +765,7 @@ class AnalysisWindow(QMainWindow):
         spectrum_data_paths = [p for p in all_checked_paths if 'Raw_Data' in p]
         
         # Determine plot range by finding the widest line width among matching lines.
-        linelist_paths = [p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
+        linelist_paths =[p for p in all_checked_paths if 'Calibrated_Linelists' in p or 'Identified_Lines' in p]
         max_fwhm = 0.0
         tolerance = float(self.tolerance_edit.text())
         for path in linelist_paths:
@@ -707,51 +777,85 @@ class AnalysisWindow(QMainWindow):
                 best_match_index = differences.idxmin()
                 if differences[best_match_index] <= tolerance: max_fwhm = max(max_fwhm, linelist_df.loc[best_match_index, 'width'])
             except Exception as e: print(f"Could not read FWHM for line {target_wavenumber} in {path}: {e}")
+            
         if max_fwhm > 0: max_fwhm /= 1000.0 # Convert from mK to cm-1
         plot_range = (5.0 * max_fwhm) if max_fwhm > 0 else 5.0
         
-        spectrum_data_loaded = False; num_plots = len(spectrum_data_paths); axes = []
+        spectrum_data_loaded = False
+        num_plots = len(spectrum_data_paths)
+        axes =[]
         
-# --- Create subplot layout based on user choice ---
+        # --- Create subplot layout based on user choice ---
         if plot_in_separate_windows and num_plots > 0:
-            # Create subplots WITHOUT 'sharey' so they scale independently
+            # Independent scaling (no sharey)
             for i in range(num_plots):
                 axes.append(self.figure.add_subplot(1, num_plots, i + 1))
         else:
-            axes =[self.figure.add_subplot(1, 1, 1)]
+            axes = [self.figure.add_subplot(1, 1, 1)]
 
         # --- Loop through and plot each selected spectrum ---
         for i, spec_path in enumerate(spectrum_data_paths):
             try:
                 plot_axis = axes[i] if plot_in_separate_windows and num_plots > 0 else axes[0]
-                line_color = color_cycle[i % len(color_cycle)]
+                spectrum_name = spec_path.split('/')[2]
+                
+                # --- Check if this spectrum is excluded for this line ---
+                is_excluded = False
+                if line_data is not None:
+                    excluded_col = f"{spectrum_name}\nExcluded"
+                    if excluded_col in line_data.index and line_data[excluded_col] == True:
+                        is_excluded = True
+                        
+                # --- Set plot aesthetics based on exclusion status ---
+                if is_excluded:
+                    line_color = 'lightgray'
+                    alpha = 0.5
+                    plot_label = f"{spectrum_name} (Excluded)"
+                else:
+                    line_color = color_cycle[i % len(color_cycle)]
+                    alpha = 0.7
+                    plot_label = spectrum_name
+
+                # Load and plot the actual data
                 with h5py.File(self.h5_filepath, 'r') as f:
                     h5_dataset = f[spec_path]; attrs = h5_dataset.attrs
                     wavcorr, wstart, delw, rdsclfct = attrs.get('wavcorr', 0.0), attrs.get('wstart', 0.0), attrs.get('delw', 1.0), attrs.get('rdsclfct', 1.0)
-                    data = h5_dataset[:]; spectrum_name = spec_path.split('/')[2]
-                    y, indices = data * rdsclfct, np.arange(len(data)); x = wstart + indices * delw; x_corrected = x * (1.0 + wavcorr)
+                    data = h5_dataset[:] 
+                    y = data * rdsclfct
+                    indices = np.arange(len(data))
+                    x = wstart + indices * delw
+                    x_corrected = x * (1.0 + wavcorr)
                     mask = (x_corrected >= target_wavenumber - plot_range) & (x_corrected <= target_wavenumber + plot_range)
+                    
                     if np.any(mask):
-                        plot_axis.plot(x_corrected[mask], y[mask], color=line_color, alpha=0.7, label=spectrum_name)
-                        plot_axis.axvline(target_wavenumber, color='red', linestyle='--'); plot_axis.grid(True)
+                        plot_axis.plot(x_corrected[mask], y[mask], color=line_color, alpha=alpha, label=plot_label)
+                        # Make the vertical red dashed line semi-transparent if excluded
+                        plot_axis.axvline(target_wavenumber, color='red', linestyle='--', alpha=0.3 if is_excluded else 1.0)
+                        plot_axis.grid(True)
                         if plot_in_separate_windows:
-                            plot_axis.set_title(spectrum_name, fontsize=10)
+                            plot_axis.set_title(plot_label, fontsize=10)
                         spectrum_data_loaded = True
             except Exception as e: print(f"Error loading spectrum data for plot from {spec_path}: {e}")
         
         # --- Add labels and titles appropriate for the plot mode ---
         if spectrum_data_loaded:
             if plot_in_separate_windows and num_plots > 0:
-                self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)'); axes[0].set_ylabel('Intensity')
+                self.figure.suptitle(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
+                self.figure.supxlabel(r'$\sigma$ (cm$^{-1}$)')
+                axes[0].set_ylabel('Intensity')
             else:
-                main_ax = axes[0]; main_ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹"); main_ax.set_xlabel(r'$\sigma$ (cm$^{-1}$)'); main_ax.set_ylabel('Intensity'); main_ax.legend()
+                main_ax = axes[0]
+                main_ax.set_title(f"Spectra around {target_wavenumber:.3f} cm⁻¹")
+                main_ax.set_xlabel(r'$\sigma$ (cm$^{-1}$)')
+                main_ax.set_ylabel('Intensity')
+                main_ax.legend()
             self.figure.tight_layout()
         else:
             ax = self.figure.add_subplot(1,1,1)
             ax.text(0.5, 0.5, "No Spectrum Data Selected or Loaded", ha='center', va='center', transform=ax.transAxes, fontsize=12, color='darkred')
         
-        self.canvas.draw()
-            
+        self.canvas.draw()       
+
     def _clear_plot(self):
         """Clears the plot canvas and shows a placeholder message."""
         if self.figure.get_axes():
@@ -760,7 +864,7 @@ class AnalysisWindow(QMainWindow):
             ax.set_xticks([]); ax.set_yticks([])
             self.canvas.draw()
 
-    def _calculate_clicked(self):
+    def _calculate_clicked(self):   
         """Handles the 'Calculate' button click, runs the analysis, and shows the results dialog."""
         if self.master_line_data_df.empty: QMessageBox.warning(self, "Calculation Error", "No lines loaded."); return
         selected_indexes = self.level_table.selectionModel().selectedRows()
@@ -768,17 +872,40 @@ class AnalysisWindow(QMainWindow):
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
         upper_level_key = selected_level_data['key']
+        
+        # --- NEW: Fetch calculations table to compute unobserved residuals ---
+        calcs_df = pd.DataFrame()
         try:
-            self.result_df = self.analysis_module.calculate_branching_fractions(self.master_line_data_df, upper_level_key=upper_level_key, energy_levels_df=self.current_energy_levels_df)
+            with h5py.File(self.h5_filepath, 'r') as f:
+                if '/Calculations' in f:
+                    calc_groups = list(f['/Calculations'].keys())
+                    if calc_groups:
+                        calc_path = f"/Calculations/{calc_groups[0]}/table"
+                        calcs_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, calc_path)
+        except Exception as e:
+            print(f"Warning: Could not load calculations table for residuals: {e}")
+            
+        try:
+            tolerance = float(self.tolerance_edit.text())
+        except ValueError:
+            tolerance = 0.02
+            
+        try:
+            self.result_df = self.analysis_module.calculate_branching_fractions(
+                self.master_line_data_df, 
+                upper_level_key=upper_level_key, 
+                energy_levels_df=self.current_energy_levels_df,
+                calculations_df=calcs_df,
+                wavenumber_tolerance=tolerance
+            )
+            
             if not self.result_df.empty:
                 self.save_results_btn.setEnabled(True)
                 
-                # --- CHANGED CODE: Make the dialog non-blocking (modeless) ---
-                # Save it to 'self' so the garbage collector doesn't instantly destroy it
+                # Show modeless dialog
                 self.results_dialog = ResultsDisplayDialog(self.result_df, self)
-                self.results_dialog.setModal(False) # Ensure it doesn't block the main window
-                self.results_dialog.show()          # Show it instead of executing it
-                # -------------------------------------------------------------
+                self.results_dialog.setModal(False)
+                self.results_dialog.show()
                 
             else:
                 QMessageBox.warning(self, "Calculation Error", "Calculation returned no results."); self.save_results_btn.setEnabled(False)
