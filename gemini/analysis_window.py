@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QTableView, QTreeView, QSplitter, QDockWidget, QPushButton, QLineEdit,
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
-    QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader
+    QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader, QApplication
 )
 from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel, QRect # <--- Added QRect
 from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush, QPainter 
@@ -265,15 +265,16 @@ class ResultsDisplayDialog(QDialog):
     """A dialog window to display a DataFrame in a QTableView, used for showing results."""
     def __init__(self, df, parent=None):
         super().__init__(parent)
+        self.df = df  # Store a reference to the dataframe
         self.setWindowTitle("Calculation Results")
-        self.setMinimumSize(1000, 500) # Slightly wider for the new columns
+        self.setMinimumSize(1000, 500)
         
         layout = QVBoxLayout(self)
         self.table_view = QTableView()
         self.table_view.setModel(PandasTableModel(df))
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
-        # --- NEW: Extract metadata to show residuals and lifetime ---
+        # Extract metadata to show residuals and lifetime
         resid = df.attrs.get('residual_fraction', 0.0) * 100.0
         lifetime = df.attrs.get('lifetime', 0.0)
         
@@ -286,10 +287,52 @@ class ResultsDisplayDialog(QDialog):
         
         layout.addWidget(self.table_view)
         
+        # --- NEW: Add the Copy button next to the OK button ---
+        button_layout = QHBoxLayout()
+        
+        copy_btn = QPushButton("Copy to Clipboard (for Excel)")
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        button_layout.addWidget(copy_btn)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok)
+        button_box.accepted.connect(self.accept)
+        button_layout.addWidget(button_box)
+        
+        layout.addLayout(button_layout)
+        # ------------------------------------------------------
+
+    def _copy_to_clipboard(self):
+        """Exports the DataFrame to the system clipboard for Excel/Spreadsheets."""
+        try:
+            # Convert DataFrame to a tab-separated string (perfect for Excel)
+            text = self.df.to_csv(sep='\t', index=False)
+            
+            # Send it to the system clipboard
+            QApplication.clipboard().setText(text)
+            
+            QMessageBox.information(self, "Success", "Results copied to clipboard!\nYou can now paste them directly into Excel or Sheets.")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to copy to clipboard:\n{e}")
+
+class LineDetailsDialog(QDialog):
+    """A dialog window to display all raw parameters of a line across all spectra."""
+    def __init__(self, df, wavenumber, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Line Parameters: ~{wavenumber:.3f} cm⁻¹")
+        self.setMinimumSize(900, 250)
+        
+        layout = QVBoxLayout(self)
+        self.table_view = QTableView()
+        self.table_view.setModel(PandasTableModel(df))
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        
+        header_label = QLabel(f"<b>Raw Parameters for Line near {wavenumber:.3f} cm⁻¹</b>")
+        layout.addWidget(header_label)
+        layout.addWidget(self.table_view)
+        
         button_box = QDialogButtonBox(QDialogButtonBox.Ok)
         button_box.accepted.connect(self.accept)
         layout.addWidget(button_box)
-
 
 class PlotPopupDialog(QDialog):
     """A generic dialog for displaying a Matplotlib plot in a separate window."""
@@ -378,15 +421,22 @@ class AnalysisWindow(QMainWindow):
         data_source_layout.addWidget(QLabel("Master Previous IDs File:")); data_source_layout.addWidget(self.prev_id_combo)
         data_source_layout.addWidget(QLabel("Select Data for Comparison/Plotting:"))
         self.data_source_table = QTableWidget(); self.data_source_table.itemChanged.connect(self._on_data_source_table_item_changed)
+        self.data_source_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.data_source_table.customContextMenuRequested.connect(self._show_data_source_context_menu)
         data_source_layout.addWidget(self.data_source_table)
         self.analysis_controls_group = QWidget(); analysis_controls_layout = QVBoxLayout(self.analysis_controls_group)
         self.separate_plots_checkbox = QCheckBox("Plot Spectra in Separate Windows"); analysis_controls_layout.addWidget(self.separate_plots_checkbox)
-        self.tolerance_edit = QLineEdit("0.02"); self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
+        self.tolerance_edit = QLineEdit("0.1"); self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
         analysis_controls_layout.addWidget(QLabel("Wavenumber Matching Tolerance (cm⁻¹):")); analysis_controls_layout.addWidget(self.tolerance_edit)
         self.run_analysis_btn = QPushButton("Calculate Branching Fractions"); self.run_analysis_btn.clicked.connect(self._calculate_clicked)
         analysis_controls_layout.addWidget(self.run_analysis_btn)
-        self.save_results_btn = QPushButton("Save Results to HDF5"); self.save_results_btn.clicked.connect(self._save_results_clicked); self.save_results_btn.setEnabled(False)
+        self.save_results_btn = QPushButton("Save Results to HDF5")
+        self.save_results_btn.clicked.connect(self._save_results_clicked)
+        self.save_results_btn.setEnabled(False)
         analysis_controls_layout.addWidget(self.save_results_btn)
+        self.copy_table_btn = QPushButton("Copy Table to Clipboard")
+        self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
+        analysis_controls_layout.addWidget(self.copy_table_btn)
         data_source_layout.addWidget(self.analysis_controls_group)
         
         self.side_panel_splitter.addWidget(level_selector_container); self.side_panel_splitter.addWidget(data_source_container)
@@ -433,6 +483,10 @@ class AnalysisWindow(QMainWindow):
         menu = QMenu()
         normalize_action = menu.addAction("Set as Intensity Reference (Normalize to 1000)")
         
+        # --- NEW: Show Details Action ---
+        menu.addSeparator()
+        details_action = menu.addAction("Show All Line Parameters")
+        
         # Get only actual spectrum names (ignoring "Mean" columns)
         spectrum_names = sorted(list(set([col.split('\n')[0] for col in self.master_line_data_df.columns if '\nSNR' in col])))
         
@@ -462,6 +516,8 @@ class AnalysisWindow(QMainWindow):
         
         if action == normalize_action: 
             self._normalize_intensities(index.row())
+        elif action == details_action:
+            self._show_line_details(index.row())
         elif action in transfer_actions:
             self._transfer_calibration(index.row(), transfer_actions[action])
         elif action in exclude_actions:
@@ -482,7 +538,7 @@ class AnalysisWindow(QMainWindow):
             self.master_line_data_df = normalized_df
             
             # After normalizing, the mean intensities must be recalculated.
-            self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
             
             # Update the table view with the new data.
             model = LineDataTableModel(self.master_line_data_df)
@@ -511,13 +567,9 @@ class AnalysisWindow(QMainWindow):
             
         try:
             # Call the analysis function to re-normalize the target spectrum
-            updated_df = self.analysis_module.transfer_calibration(
-                self.master_line_data_df, transfer_line_row, target_spectrum
-            )
+            updated_df = self.analysis_module.transfer_calibration(self.master_line_data_df, transfer_line_row, target_spectrum, self.h5_filepath)
             self.master_line_data_df = updated_df
-            
-            # Recalculate the overall weighted averages
-            self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+            self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
             
             # Update the table view
             model = LineDataTableModel(self.master_line_data_df)
@@ -551,7 +603,7 @@ class AnalysisWindow(QMainWindow):
         self.master_line_data_df.at[self.master_line_data_df.index[row_index], excluded_col] = not current_status
         
         # Recalculate means (this will now force the excluded weight to 0)
-        self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
+        self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
         
         # Refresh the table and plot
         model = LineDataTableModel(self.master_line_data_df)
@@ -563,6 +615,62 @@ class AnalysisWindow(QMainWindow):
             self.line_data_table.setCurrentIndex(new_index_to_select)
             self.line_data_table.selectionModel().select(new_index_to_select, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
             self._on_line_selected(new_index_to_select)
+
+    def _show_line_details(self, row_index: int):
+        """Fetches the raw parameters from the HDF5 file and displays them in a popup."""
+        if self.master_line_data_df.empty: return
+        
+        line_data = self.master_line_data_df.iloc[row_index]
+        target_wavenumber = pd.to_numeric(line_data.get('wavenumber'), errors='coerce')
+        
+        if pd.isna(target_wavenumber):
+            QMessageBox.warning(self, "Error", "Invalid wavenumber for selected line.")
+            return
+            
+        try:
+            tolerance = float(self.tolerance_edit.text())
+        except ValueError:
+            tolerance = 0.1
+            
+        all_checked_paths = self._get_checked_data_paths()
+        linelist_paths =[p for p in all_checked_paths if ('Identified_Lines' in p or 'Calibrated_Linelists' in p)]
+        
+        details =[]
+        for path in linelist_paths:
+            try:
+                spectrum_name = path.split('/')[2]
+                df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, path)
+                if 'wavenumber' in df.columns:
+                    df['wavenumber_num'] = pd.to_numeric(df['wavenumber'], errors='coerce')
+                    diffs = np.abs(df['wavenumber_num'] - target_wavenumber)
+                    
+                    if not diffs.empty and np.min(diffs) <= tolerance:
+                        best_idx = np.argmin(diffs)
+                        row_dict = df.iloc[best_idx].copy().to_dict()
+                        
+                        # Cleanup the internal tracking columns
+                        row_dict.pop('wavenumber_num', None)
+                        row_dict.pop('index', None)
+                        
+                        # Put spectrum name first
+                        final_dict = {'Spectrum': spectrum_name}
+                        final_dict.update(row_dict)
+                        details.append(final_dict)
+            except Exception as e:
+                print(f"Could not load details from {path}: {e}")
+                
+        if details:
+            details_df = pd.DataFrame(details)
+            # Reorder columns to ensure Spectrum and wavenumber are the first two columns
+            cols = ['Spectrum', 'wavenumber'] +[c for c in details_df.columns if c not in ['Spectrum', 'wavenumber']]
+            details_df = details_df[cols]
+            
+            # Show modeless dialog
+            self.details_dialog = LineDetailsDialog(details_df, target_wavenumber, self)
+            self.details_dialog.setModal(False)
+            self.details_dialog.show()
+        else:
+            QMessageBox.information(self, "No Details", "No matching lines found in the raw linelists.")
 
     def _populate_data_source_table(self):
         """Scans the HDF5 file and populates the data source table with available items."""
@@ -664,14 +772,23 @@ class AnalysisWindow(QMainWindow):
         self._populate_line_data_table(selected_level_data['key'])
         
     def _format_table_columns(self):
-        """Helper method to explicitly resize the width of all columns."""
+        """Helper method to explicitly resize the width of all columns and hide unwanted ones."""
         model = self.line_data_table.model()
         if not model: 
             return
             
         for col in range(model.columnCount()):
             header_text = str(model.headerData(col, Qt.Horizontal, Qt.DisplayRole))
+            col_name = str(model.df.columns[col])
             
+            # --- NEW: Hide the math-only tracking columns from the user ---
+            if "Width" in col_name or "Excluded" in col_name:
+                self.line_data_table.setColumnHidden(col, True)
+                continue
+            else:
+                self.line_data_table.setColumnHidden(col, False)
+            # --------------------------------------------------------------
+                
             if col in [0, 1, 2]:  # wavenumber, lower_level_key, intensity
                 self.line_data_table.resizeColumnToContents(col)
             elif "Mean" in header_text: 
@@ -707,8 +824,8 @@ class AnalysisWindow(QMainWindow):
             self.master_line_data_df = self.analysis_module.aggregate_observed_data_for_display(h5_filepath=self.h5_filepath, previous_ids_df=df_to_pass, linelist_paths=linelist_paths_to_merge, tolerance=float(self.tolerance_edit.text()))
             
             # 2. Calculate weighted averages.
-            if not self.master_line_data_df.empty: self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df)
-            
+            if not self.master_line_data_df.empty: 
+                self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
             if self.master_line_data_df.empty: self.line_data_table.setModel(None); self._clear_plot(); return
             
             # 3. Display the final table.
@@ -736,6 +853,82 @@ class AnalysisWindow(QMainWindow):
             selected_level_data = self.filtered_levels_df.iloc[row]
             self._populate_line_data_table(selected_level_data['key'])
         else: self.line_data_table.setModel(None)
+
+    def _show_data_source_context_menu(self, position):
+        """Creates a context menu for the data source table to edit metadata."""
+        index = self.data_source_table.indexAt(position)
+        if not index.isValid(): return
+        
+        row = index.row()
+        # The vertical header stores the spectrum names
+        spectrum_name = self.data_source_table.verticalHeaderItem(row).text()
+        
+        menu = QMenu()
+        edit_bands_action = menu.addAction(f"Edit Band Limits (bandlo, bandhi) for {spectrum_name}")
+        
+        action = menu.exec_(self.data_source_table.viewport().mapToGlobal(position))
+        
+        if action == edit_bands_action:
+            self._edit_spectrum_bands(spectrum_name)
+
+    def _edit_spectrum_bands(self, spectrum_name: str):
+        """Pops up a dialog to let the user override bandlo and bandhi."""
+        spec_path = f"/Spectra/{spectrum_name}/Raw_Data/spectrum"
+        
+        # 1. Fetch current limits from HDF5
+        try:
+            with h5py.File(self.h5_filepath, 'r') as f:
+                if spec_path in f:
+                    attrs = f[spec_path].attrs
+                    current_bandlo = attrs.get('bandlo', attrs.get('wstart', 0.0))
+                    current_bandhi = attrs.get('bandhi', attrs.get('wend', current_bandlo + 30000.0))
+                else:
+                    QMessageBox.warning(self, "Error", f"Raw data not found for {spectrum_name}")
+                    return
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not read metadata: {e}")
+            return
+            
+        # 2. Build the Dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit Band Limits: {spectrum_name}")
+        layout = QFormLayout(dialog)
+        
+        lo_edit = QLineEdit(str(current_bandlo))
+        hi_edit = QLineEdit(str(current_bandhi))
+        
+        layout.addRow("bandlo (cm⁻¹):", lo_edit)
+        layout.addRow("bandhi (cm⁻¹):", hi_edit)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        
+        # 3. Save and Refresh if Accepted
+        if dialog.exec_() == QDialog.Accepted:
+            try:
+                new_lo = float(lo_edit.text())
+                new_hi = float(hi_edit.text())
+                
+                # Save straight to the HDF5 attributes
+                with h5py.File(self.h5_filepath, 'a') as f:
+                    f[spec_path].attrs['bandlo'] = new_lo
+                    f[spec_path].attrs['bandhi'] = new_hi
+                    
+                QMessageBox.information(self, "Success", f"Band limits for {spectrum_name} updated successfully.")
+                
+                # Force a recalculation with the new values by refreshing the table
+                if self.level_table.selectionModel() and self.level_table.selectionModel().hasSelection():
+                    selected_indexes = self.level_table.selectionModel().selectedRows()
+                    row = selected_indexes[0].row()
+                    selected_level_data = self.filtered_levels_df.iloc[row]
+                    self._populate_line_data_table(selected_level_data['key'])
+                    
+            except ValueError:
+                QMessageBox.warning(self, "Invalid Input", "Please enter valid numeric values.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save metadata: {e}")
             
     def _on_line_selected(self, index: QModelIndex):
         """Handles the event when a user clicks a line in the main table, triggering a plot update."""
@@ -888,7 +1081,7 @@ class AnalysisWindow(QMainWindow):
         try:
             tolerance = float(self.tolerance_edit.text())
         except ValueError:
-            tolerance = 0.02
+            tolerance = 0.1
             
         try:
             self.result_df = self.analysis_module.calculate_branching_fractions(
@@ -953,6 +1146,34 @@ class AnalysisWindow(QMainWindow):
                 QMessageBox.critical(self, "HDF5 Save Error", f"Failed to save results:\n{e}")
         else:
             QMessageBox.information(self, "Save Cancelled", "Save operation cancelled.")
+
+    def _copy_table_to_clipboard(self):
+        """
+        Exports the main interactive data table to the system clipboard, 
+        formatting it specifically for easy pasting into Excel or Google Sheets.
+        """
+        if self.master_line_data_df.empty:
+            QMessageBox.warning(self, "Copy Error", "No data to copy. Please select an upper level first.")
+            return
+            
+        try:
+            # Create a copy so we don't accidentally modify the actual working dataframe
+            export_df = self.master_line_data_df.copy()
+            
+            # Replace the '\n' in the column headers with a space. 
+            # (Otherwise, Excel will split the headers across multiple rows!)
+            export_df.columns =[str(col).replace('\n', ' ') for col in export_df.columns]
+            
+            # Convert the dataframe to a tab-separated string
+            text = export_df.to_csv(sep='\t', index=False)
+            
+            # Send it to the system clipboard
+            QApplication.clipboard().setText(text)
+            
+            QMessageBox.information(self, "Success", "Main table copied to clipboard!\nYou can now paste it directly into Excel or Sheets.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to copy to clipboard:\n{e}")
             
     def _run_debug_diagnostics(self):
         """Runs a series of checks on the current data state and shows a report."""
