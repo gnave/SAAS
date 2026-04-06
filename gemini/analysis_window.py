@@ -14,6 +14,7 @@ import numpy as np
 import h5py
 import os
 from datetime import date
+import math
 
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -93,8 +94,9 @@ class LineDataTableModel(PandasTableModel):
     and 'intensity' are displayed as raw strings, while formatting calculated
     values like mean uncertainty as percentages.
     """
-    def __init__(self, data: pd.DataFrame, parent=None):
+    def __init__(self, data: pd.DataFrame, highlight_df: pd.DataFrame, parent=None):
         super().__init__(data, parent)
+        self.highlight_df = highlight_df
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         """Intercepts column names to trigger the multi-level header."""
@@ -119,7 +121,7 @@ class LineDataTableModel(PandasTableModel):
 
         col_name = str(self.df.columns[index.column()])
         
-        # --- NEW: Render excluded cells as grey text ---
+        # Render excluded cells as grey text ---
         if role == Qt.ForegroundRole:
             if '\n' in col_name:
                 spectrum_name = col_name.split('\n')[0]
@@ -128,7 +130,15 @@ class LineDataTableModel(PandasTableModel):
                     if self.df.iloc[index.row()].get(excluded_col) == True:
                         return QBrush(Qt.gray)
             return None
-        # -----------------------------------------------
+
+        # Render outlier cells with a red background ---
+        if role == Qt.BackgroundRole:
+            if not self.highlight_df.empty and col_name in self.highlight_df.columns:
+                 is_outlier = self.highlight_df.iloc[index.row()].get(col_name, False)
+                 if is_outlier:
+                     return QBrush(QColor('#FFDDDD'))  # A light red
+            return None
+
 
         if role != Qt.DisplayRole:
             return None
@@ -287,6 +297,102 @@ class MultiLevelHeaderView(QHeaderView):
 
         painter.restore()
 
+def _get_decimal_places(uncertainty: float) -> int:
+    """
+    Calculates the decimal position of the uncertainty's last significant digit.
+    Rule of 20: 
+    - If 1st sig digit is 1, keep 2 sig digits.
+    - If 1st sig digit is >= 2, keep 1 sig digit.
+    """
+    if not isinstance(uncertainty, (float, int, np.floating)) or not np.isfinite(uncertainty) or uncertainty <= 0:
+        return 2
+
+    # Get the order of magnitude of the first significant digit
+    # e.g., 0.005 -> -3 | 150.0 -> 2
+    order_of_magnitude = math.floor(math.log10(abs(uncertainty)))
+    
+    # Scale uncertainty so the first digit is in the ones place
+    # e.g., 0.00506 -> 5.06
+    first_digits = uncertainty / (10**order_of_magnitude)
+
+    if first_digits >= 2.0:
+        # First sig digit is 2-9: Keep 1 sig digit. 
+        # Precision is at the 'order_of_magnitude' decimal place.
+        return -int(order_of_magnitude)
+    else:
+        # First sig digit is 1: Keep 2 sig digits.
+        # Precision is one place further.
+        return -int(order_of_magnitude) + 1
+    
+class ResultsTableModel(QAbstractTableModel):
+    """A specialized model for the results table with custom formatting."""
+    def __init__(self, data: pd.DataFrame, parent=None):
+        super().__init__(parent)
+        self.df = data
+        self.bf_dps = {}
+        self.tp_dps = {}
+        
+        for i, row in self.df.iterrows():
+            # 1. Calculate Absolute Uncertainty for Branching Fraction
+            bf_val = row.get('Branching Fraction', 0)
+            bf_unc_pct = row.get('BF Uncertainty (%)', 0)
+            bf_abs_unc = abs(bf_val * (bf_unc_pct / 100.0))
+            self.bf_dps[i] = _get_decimal_places(bf_abs_unc)
+
+            # 2. Calculate Absolute Uncertainty for Transition Probability
+            tp_val = row.get('Trans. Prob. (10^6 s^-1)', 0)
+            tp_unc_pct = row.get('Trans. Prob. Unc. (%)', 0)
+            tp_abs_unc = abs(tp_val * (tp_unc_pct / 100.0))
+            self.tp_dps[i] = _get_decimal_places(tp_abs_unc)
+
+    def rowCount(self, parent=QModelIndex()): return self.df.shape[0]
+    def columnCount(self, parent=QModelIndex()): return self.df.shape[1]
+    
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return str(self.df.columns[section])
+        return super().headerData(section, orientation, role)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or role != Qt.DisplayRole:
+            return None
+
+        value = self.df.iloc[index.row(), index.column()]
+        col_name = str(self.df.columns[index.column()])
+        row_idx = self.df.index[index.row()]
+        
+        if pd.isna(value): return ""
+
+        try:
+            # FORMATTING BRANCHING FRACTION
+            if col_name == 'Branching Fraction':
+                dp = self.bf_dps.get(row_idx, 3)
+                if dp < 0: return f"{round(value, dp):.0f}"
+                return f"{value:.{max(0, dp)}f}"
+            
+            # FORMATTING TRANSITION PROBABILITY
+            elif col_name == 'Trans. Prob. (10^6 s^-1)':
+                dp = self.tp_dps.get(row_idx, 1)
+                if dp < 0: return f"{int(round(value, dp))}"
+                return f"{value:.{max(0, dp)}f}"
+                
+            # FORMATTING PERCENTAGE COLUMNS
+            # Percentages themselves usually only need 1 decimal place 
+            # unless they are very small.
+            elif col_name in ['BF Uncertainty (%)', 'Trans. Prob. Unc. (%)']:
+                if value >= 10: return f"{value:.0f}"
+                return f"{value:.1f}"
+
+            # DEFAULT FOR OTHER FLOATS
+            elif isinstance(value, (float, np.floating)):
+                if 'Intensity' in col_name: return f"{int(round(value))}"
+                return f"{value:.4f}"
+
+        except Exception:
+            return f"{value:.3f}"
+
+        return str(value)
+
 
 class ResultsDisplayDialog(QDialog):
     """A dialog window to display a DataFrame in a QTableView, used for showing results."""
@@ -298,7 +404,7 @@ class ResultsDisplayDialog(QDialog):
         
         layout = QVBoxLayout(self)
         self.table_view = QTableView()
-        self.table_view.setModel(PandasTableModel(df))
+        self.table_view.setModel(ResultsTableModel(df))
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
         # Extract metadata to show residuals and lifetime
@@ -391,11 +497,12 @@ class AnalysisWindow(QMainWindow):
         self.current_previous_ids_df = pd.DataFrame()   # Master list of transitions for an upper level
         self.filtered_levels_df = pd.DataFrame()        # Levels with lifetimes > 0
         self.master_line_data_df = pd.DataFrame()       # The main aggregated data table shown in the GUI
+        self.highlight_df = pd.DataFrame()              # NEW: Stores boolean flags for outlier highlighting
         self.result_df = pd.DataFrame()                 # The final calculated branching fractions
         self.current_upper_level_key = ""               # Tracks the currently selected level key
 
         # Mapping of GUI labels to HDF5 group names for data sources.
-        self.DATA_SOURCE_COLUMNS = {"Cal. Linelists": "Calibrated_Linelists", "Ident. Lines": "Identified_Lines", "Raw Spectrum": "Raw_Data"}
+        self.DATA_SOURCE_COLUMNS = {"Cal. Linelists": "Calibrated_Linelists", "Raw Spectrum": "Raw_Data"}
 
         # --- UI Setup ---
         self._create_menu_bar()
@@ -592,9 +699,12 @@ class AnalysisWindow(QMainWindow):
             
             # After normalizing, the mean intensities must be recalculated.
             self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
-            
+
+            # Calculate outliers based on the new means ---
+            self.highlight_df = self.analysis_module.calculate_outliers(self.master_line_data_df, self.h5_filepath)     
+           
             # Update the table view with the new data.
-            model = LineDataTableModel(self.master_line_data_df)
+            model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
             self.line_data_table.setModel(model)
             self._format_table_columns() 
             
@@ -623,9 +733,12 @@ class AnalysisWindow(QMainWindow):
             updated_df = self.analysis_module.transfer_calibration(self.master_line_data_df, transfer_line_row, target_spectrum, self.h5_filepath)
             self.master_line_data_df = updated_df
             self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
+
+            # Recalculate highlights as the mean has changed
+            self.highlight_df = self.analysis_module.calculate_outliers(self.master_line_data_df, self.h5_filepath)
             
             # Update the table view
-            model = LineDataTableModel(self.master_line_data_df)
+            model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
             self.line_data_table.setModel(model)
             self._format_table_columns()
             
@@ -657,9 +770,12 @@ class AnalysisWindow(QMainWindow):
         
         # Recalculate means (this will now force the excluded weight to 0)
         self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
+
+        # Recalculate highlights as the mean has changed
+        self.highlight_df = self.analysis_module.calculate_outliers(self.master_line_data_df, self.h5_filepath)
         
         # Refresh the table and plot
-        model = LineDataTableModel(self.master_line_data_df)
+        model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
         self.line_data_table.setModel(model)
         self._format_table_columns()
         
@@ -889,9 +1005,12 @@ class AnalysisWindow(QMainWindow):
             if not self.master_line_data_df.empty: 
                 self.master_line_data_df = self.analysis_module.add_weighted_averages(self.master_line_data_df, self.h5_filepath)
             if self.master_line_data_df.empty: self.line_data_table.setModel(None); self._clear_plot(); return
+
+            # Clear any previous highlighting ---
+            self.highlight_df = pd.DataFrame()
             
             # 3. Display the final table.
-            model = LineDataTableModel(self.master_line_data_df)
+            model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
             self.line_data_table.setModel(model)
             self._format_table_columns() 
             self._clear_plot()

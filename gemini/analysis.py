@@ -447,3 +447,90 @@ def normalize_intensities_by_reference_line(master_df: pd.DataFrame, reference_l
         if pd.notna(norm_factor) and norm_factor > 0:
             normalized_df[col] = (normalized_df[col] / norm_factor) * 1000.0
     return normalized_df
+
+def calculate_outliers(df: pd.DataFrame, h5_filepath: str = None) -> pd.DataFrame:
+    """
+    Identifies intensity values that are more than 3 sigma away from the mean.
+    
+    The standard deviation (sigma) is calculated as the root-sum-of-squares of
+    the individual line's absolute uncertainty and the mean's absolute uncertainty.
+    
+    Returns:
+        pd.DataFrame: A boolean DataFrame of the same shape as the input,
+                      with True marking the cells that are outliers.
+    """
+    if df.empty or 'Mean Intensity' not in df.columns:
+        return pd.DataFrame()
+
+    # Create a boolean dataframe to store the highlight flags, default to False
+    highlight_df = pd.DataFrame(False, index=df.index, columns=df.columns)
+    
+    spectrum_names = sorted(list(set([col.split('\n')[0] for col in df.columns if '\n' in col])))
+
+    # Pre-calculate constants for each spectrum to avoid repeating work in the main loop
+    spec_params = {}
+    for name in spectrum_names:
+        wavenumbers = pd.to_numeric(df['wavenumber'], errors='coerce')
+        intensities = pd.to_numeric(df.get(f'{name}\nIntensity'), errors='coerce')
+        snrs = pd.to_numeric(df.get(f'{name}\nSNR'), errors='coerce')
+        
+        valid_mask = intensities.notna() & snrs.notna()
+        if f'{name}\nExcluded' in df.columns:
+            valid_mask &= ~df[f'{name}\nExcluded'].fillna(False).astype(bool)
+            
+        w_maxI = wavenumbers.loc[intensities[valid_mask].idxmax()] if valid_mask.any() else 0.0
+        
+        resolutn, bandlo, bandhi = 0.05, 0.0, 30000.0
+        if h5_filepath:
+            try:
+                with h5py.File(h5_filepath, 'r') as f:
+                    spec_path = f"/Spectra/{name}/Raw_Data/spectrum"
+                    if spec_path in f:
+                        attrs = f[spec_path].attrs
+                        resolutn = float(attrs.get('resolutn', 0.05))
+                        bandlo = float(attrs.get('bandlo', attrs.get('wstart', 0.0)))
+                        bandhi = float(attrs.get('bandhi', attrs.get('wend', bandlo + 30000.0)))
+                        if bandhi <= bandlo: bandhi = bandlo + 30000.0
+            except Exception: pass
+        
+        calunc_per_1000 = 70.0 / (bandhi - bandlo) if bandhi > bandlo else 0.0
+        spec_params[name] = {'w_maxI': w_maxI, 'resolutn': resolutn, 'calunc_per_1000': calunc_per_1000}
+
+    # Main loop to check each cell
+    for index, row in df.iterrows():
+        mean_I = row.get('Mean Intensity')
+        mean_unc_frac = row.get('Mean Uncertainty')
+        
+        if pd.isna(mean_I) or pd.isna(mean_unc_frac):
+            continue
+            
+        sigma_mean_abs_sq = (mean_I * mean_unc_frac)**2
+
+        for name in spectrum_names:
+            intensity_col = f'{name}\nIntensity'
+            I_spec = row.get(intensity_col)
+            snr_spec = row.get(f'{name}\nSNR')
+            width_spec = row.get(f'{name}\nWidth')
+            wnum_spec = pd.to_numeric(row['wavenumber'], errors='coerce')
+
+            if pd.isna(I_spec) or pd.isna(snr_spec) or pd.isna(wnum_spec) or snr_spec == 0:
+                continue
+
+            # Calculate the absolute uncertainty of the individual measurement
+            params = spec_params[name]
+            root_npts = (pd.to_numeric(width_spec, errors='coerce') / 1000.0) / params['resolutn']
+            root_npts = 1.0 if pd.isna(root_npts) or root_npts <= 0 else root_npts
+            
+            variance_instrumental = 2.25 / ((snr_spec**2) * root_npts)
+            calunc = params['calunc_per_1000'] * abs(wnum_spec - params['w_maxI']) / 1000.0
+            total_variance_spec = (calunc**2) + variance_instrumental
+            sigma_spec_abs_sq = total_variance_spec * (I_spec**2)
+
+            # Calculate joint uncertainty and check condition
+            joint_sigma = (sigma_spec_abs_sq + sigma_mean_abs_sq)**0.5
+            deviation = abs(I_spec - mean_I)
+
+            if deviation > (3 * joint_sigma):
+                highlight_df.at[index, intensity_col] = True
+                
+    return highlight_df
