@@ -452,37 +452,58 @@ class AnalysisWindow(QMainWindow):
         self.data_source_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_source_table.customContextMenuRequested.connect(self._show_data_source_context_menu)
         data_source_layout.addWidget(self.data_source_table)
-        self.analysis_controls_group = QWidget(); analysis_controls_layout = QVBoxLayout(self.analysis_controls_group)
-        self.separate_plots_checkbox = QCheckBox("Plot Spectra in Separate Windows"); analysis_controls_layout.addWidget(self.separate_plots_checkbox)
-        self.tolerance_edit = QLineEdit("0.1"); self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
-        analysis_controls_layout.addWidget(QLabel("Wavenumber Matching Tolerance (cm⁻¹):")); analysis_controls_layout.addWidget(self.tolerance_edit)
-        self.run_analysis_btn = QPushButton("Calculate Branching Fractions"); self.run_analysis_btn.clicked.connect(self._calculate_clicked)
-        analysis_controls_layout.addWidget(self.run_analysis_btn)
-        self.save_results_btn = QPushButton("Save Results to HDF5")
-        self.save_results_btn.clicked.connect(self._save_results_clicked)
-        self.save_results_btn.setEnabled(False)
-        analysis_controls_layout.addWidget(self.save_results_btn)
-        self.copy_table_btn = QPushButton("Copy Table to Clipboard")
-        self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
-        analysis_controls_layout.addWidget(self.copy_table_btn)
+ 
+        self.analysis_controls_group = QWidget()
+        analysis_controls_layout = QVBoxLayout(self.analysis_controls_group)
+        self.separate_plots_checkbox = QCheckBox("Plot Spectra in Separate Windows")
+        analysis_controls_layout.addWidget(self.separate_plots_checkbox)
+        self.tolerance_edit = QLineEdit("0.1")
+        self.tolerance_edit.setValidator(QDoubleValidator(0.0, 1.0, 3, self))
+        analysis_controls_layout.addWidget(QLabel("Wavenumber Matching Tolerance (cm⁻¹):"))
+        analysis_controls_layout.addWidget(self.tolerance_edit)
+        
         data_source_layout.addWidget(self.analysis_controls_group)
         
-        self.side_panel_splitter.addWidget(level_selector_container); self.side_panel_splitter.addWidget(data_source_container)
+        self.side_panel_splitter.addWidget(level_selector_container)
+        self.side_panel_splitter.addWidget(data_source_container)
         return self.side_panel_splitter
 
     def _create_central_content_widget(self):
         """Creates the right-hand panel containing the main data table and the plot view."""
         self.central_splitter = QSplitter(Qt.Vertical)
         
+        # --- NEW: Create a container for the buttons and the table ---
+        top_container = QWidget()
+        top_layout = QVBoxLayout(top_container)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create a horizontal row for the action buttons
+        button_layout = QHBoxLayout()
+        self.run_analysis_btn = QPushButton("Calculate Branching Fractions")
+        self.run_analysis_btn.clicked.connect(self._calculate_clicked)
+        
+        self.save_results_btn = QPushButton("Save Results to HDF5")
+        self.save_results_btn.clicked.connect(self._save_results_clicked)
+        self.save_results_btn.setEnabled(False)
+        
+        self.copy_table_btn = QPushButton("Copy Table to Clipboard")
+        self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
+        
+        # Add the buttons to the horizontal layout
+        button_layout.addWidget(self.run_analysis_btn)
+        button_layout.addWidget(self.save_results_btn)
+        button_layout.addWidget(self.copy_table_btn)
+        button_layout.addStretch() # Pushes the buttons to the left
+        
+        top_layout.addLayout(button_layout)
+        
         # The main table for displaying aggregated line data
         self.line_data_table = QTableView()
         self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
         
-        # --- NEW CODE: Apply the custom multi-level header ---
+        # Apply the custom multi-level header
         self.custom_header = MultiLevelHeaderView(Qt.Horizontal, self.line_data_table)
-       
-        # Make sure the user can still drag to resize them if needed
         self.custom_header.setSectionResizeMode(QHeaderView.Interactive)
         
         self.line_data_table.setHorizontalHeader(self.custom_header)
@@ -491,8 +512,12 @@ class AnalysisWindow(QMainWindow):
 
         self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers) # Table is read-only
         self.line_data_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu); self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
-        self.central_splitter.addWidget(self.line_data_table)
+        self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
+        
+        # Add the table to the layout, and the whole container to the splitter
+        top_layout.addWidget(self.line_data_table)
+        self.central_splitter.addWidget(top_container)
         
         # The Matplotlib widget for plotting spectra
         main_plot_widget = QWidget(); plot_layout = QVBoxLayout(main_plot_widget); plot_layout.setContentsMargins(0, 0, 0, 0)
@@ -501,8 +526,8 @@ class AnalysisWindow(QMainWindow):
         plot_layout.addWidget(self.toolbar); plot_layout.addWidget(self.canvas)
         self.central_splitter.addWidget(main_plot_widget)
         
-        return self.central_splitter
-
+        return self.central_splitter    
+        
     def _show_line_table_context_menu(self, position):
         """Creates and shows a context menu when the line data table is right-clicked."""
         index = self.line_data_table.indexAt(position)
