@@ -351,7 +351,7 @@ def calculate_branching_fractions(lines_for_calculation: pd.DataFrame,
     clean_target_key = str(upper_level_key).replace('*', '').strip()
 
     lifetime = 0.0
-    life_unc_frac = 0.1
+    life_unc_frac = 0.0  # Default to 0.0 instead of hard-coded 0.1
     if not energy_levels_df.empty and 'key' in energy_levels_df.columns and 'lifetime' in energy_levels_df.columns:
         energy_levels_df['key_clean'] = energy_levels_df['key'].astype(str).str.replace('*', '', regex=False).str.strip()
         matches = energy_levels_df[energy_levels_df['key_clean'] == clean_target_key]
@@ -359,6 +359,14 @@ def calculate_branching_fractions(lines_for_calculation: pd.DataFrame,
             try:
                 lifetime = float(matches.iloc[0]['lifetime'])
             except ValueError: pass
+            
+            # Look for the new fractional uncertainty column
+            if 'lifetime_unc_frac' in matches.columns:
+                try:
+                    val = matches.iloc[0]['lifetime_unc_frac']
+                    if not pd.isna(val):
+                        life_unc_frac = float(val)
+                except ValueError: pass
 
     frac_resid, unobserved_A_sum, matched_theo_A = 0.0, 0.0, {}
     
@@ -407,7 +415,7 @@ def calculate_branching_fractions(lines_for_calculation: pd.DataFrame,
             
             if lifetime > 0:
                 df.at[index, 'Trans. Prob. (10^6 s^-1)'] = (1000.0 * BF) / lifetime
-                df.at[index, 'Trans. Prob. Unc. (%)'] = np.sqrt(rel_var_BF + life_unc_frac ** 2) * 100.0 # Assuming life_unc_frac = 0.1
+                df.at[index, 'Trans. Prob. Unc. (%)'] = np.sqrt(rel_var_BF + life_unc_frac ** 2) * 100.0 
                 
             wn = pd.to_numeric(row['wavenumber'], errors='coerce')
             if not pd.isna(wn):

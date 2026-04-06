@@ -44,8 +44,7 @@ def create_experiment_file(filepath, metadata_dict):
     # Define schemas for the project-level groups that will hold tabular data.
     # These schemas are used by the import wizard to guide column mapping.
     print("Defining default group schemas...")
-    define_group_schema(filepath, '/Levels', 
-                        ['key', 'energy', 'j_value', 'parity', 'lifetime', 'designation'])
+    define_group_schema(filepath, '/Levels',['key', 'energy', 'j_value', 'parity', 'lifetime', 'lifetime_unc_frac', 'designation'])
     
     define_group_schema(filepath, '/Calculations',
                         [

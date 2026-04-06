@@ -38,14 +38,44 @@ class PandasTableModel(QAbstractTableModel):
         return self.df.shape[1]
 
     def data(self, index, role=Qt.DisplayRole):
-        if index.isValid() and role == Qt.DisplayRole:
-            value = self.df.iloc[index.row(), index.column()]
-            if isinstance(value, (float, np.floating)):
-                if pd.isna(value): return ""
-                return f"{value:.4f}"
-            return str(value)
-        return None
+        if not index.isValid() or role != Qt.DisplayRole:
+            return None
 
+        value = self.df.iloc[index.row(), index.column()]
+        col_name = str(self.df.columns[index.column()]).strip().lower()
+
+        # Safely handle missing values
+        if pd.isna(value):
+            return ""
+
+        # Force specific formatting for j_value (1 decimal place)
+        if 'j_value' in col_name:
+            try:
+                return f"{float(value):.1f}"
+            except (ValueError, TypeError):
+                pass
+                
+        # Force specific formatting for parity (integer 0 or 1)
+        elif 'parity' in col_name:
+            try:
+                return f"{int(float(value))}"
+            except (ValueError, TypeError):
+                pass
+                
+        # Force specific formatting for lifetime and its uncertainty (2 decimal places)
+        elif 'lifetime' in col_name:
+            try:
+                return f"{float(value):.2f}"
+            except (ValueError, TypeError):
+                pass
+
+        # Default formatting for all other floats (4 decimal places)
+        if isinstance(value, (float, np.floating)):
+            return f"{value:.4f}"
+
+        # Fallback for strings
+        return str(value)
+    
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
             if orientation == Qt.Horizontal:
@@ -103,14 +133,11 @@ class LineDataTableModel(PandasTableModel):
         if role != Qt.DisplayRole:
             return None
 
-
         value = self.df.iloc[index.row(), index.column()]
-        col_name = str(self.df.columns[index.column()])
         
-
         # Rule 1: Always treat the original 'intensity', 'wavenumber', and 'key' columns as text
         # to preserve their original formatting from the source file.
-        if col_name in ['wavenumber', 'intensity', 'lower_level_key']:
+        if col_name in['wavenumber', 'intensity', 'lower_level_key']:
             return str(value)
         
         # Rule 2: Handle formatting for calculated float columns.
@@ -365,6 +392,7 @@ class AnalysisWindow(QMainWindow):
         self.filtered_levels_df = pd.DataFrame()        # Levels with lifetimes > 0
         self.master_line_data_df = pd.DataFrame()       # The main aggregated data table shown in the GUI
         self.result_df = pd.DataFrame()                 # The final calculated branching fractions
+        self.current_upper_level_key = ""               # Tracks the currently selected level key
 
         # Mapping of GUI labels to HDF5 group names for data sources.
         self.DATA_SOURCE_COLUMNS = {"Cal. Linelists": "Calibrated_Linelists", "Ident. Lines": "Identified_Lines", "Raw Spectrum": "Raw_Data"}
@@ -404,16 +432,16 @@ class AnalysisWindow(QMainWindow):
         level_selector_container = QWidget(); level_selector_layout = QVBoxLayout(level_selector_container)
         self.level_file_combo = QComboBox(); self.level_file_combo.addItem("Select Energy Level File..."); self.level_file_combo.currentIndexChanged.connect(self._on_level_file_selected)
         level_selector_layout.addWidget(QLabel("Master Energy Level File:")); level_selector_layout.addWidget(self.level_file_combo)
-        self.level_table = QTableView(); self.level_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.level_table.setSelectionMode(QAbstractItemView.SingleSelection); self.level_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.level_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive); self.level_table.clicked.connect(self._on_level_selected_in_table)
-        level_selector_layout.addWidget(QLabel("Available Upper Levels:")); level_selector_layout.addWidget(self.level_table)
-        header_height = self.level_table.horizontalHeader().height(); row_height = self.level_table.verticalHeader().defaultSectionSize()
-        self.level_table.setMaximumHeight(int(header_height + 5.5 * row_height)) # Limit table height
-        self.level_details_group = QWidget(); level_details_layout = QFormLayout(self.level_details_group)
-        self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        for editor in [self.level_key_display, self.level_energy_display, self.level_j_display, self.level_parity_display, self.level_lifetime_display]: editor.setReadOnly(True)
-        level_details_layout.addRow("key:", self.level_key_display); level_details_layout.addRow("energy (cm⁻¹):", self.level_energy_display); level_details_layout.addRow("j_value:", self.level_j_display); level_details_layout.addRow("parity:", self.level_parity_display); level_details_layout.addRow("lifetime (ns):", self.level_lifetime_display)
-        level_selector_layout.addWidget(QLabel("Selected Level Details:")); level_selector_layout.addWidget(self.level_details_group)
+
+        self.level_table = QTableView()
+        self.level_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.level_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.level_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.level_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.level_table.clicked.connect(self._on_level_selected_in_table)
+        level_selector_layout.addWidget(QLabel("Available Upper Levels:"))
+        level_selector_layout.addWidget(self.level_table)
+
         
         # --- Bottom Section: Data Sources and Actions ---
         data_source_container = QWidget(); data_source_layout = QVBoxLayout(data_source_container)
@@ -735,7 +763,11 @@ class AnalysisWindow(QMainWindow):
             # Filter for levels with a measured lifetime, which are the only valid upper levels.
             if not self.current_energy_levels_df.empty and 'lifetime' in self.current_energy_levels_df.columns:
                 self.filtered_levels_df = self.current_energy_levels_df[self.current_energy_levels_df['lifetime'] > 0].copy()
-                self.level_table.setModel(PandasTableModel(self.filtered_levels_df[['key', 'energy']])); self.level_table.resizeColumnsToContents()
+                # Dynamically fetch the columns so it doesn't crash if an older file is missing uncertainty
+                cols_to_show = [col for col in['key', 'energy', 'j_value', 'parity', 'lifetime', 'lifetime_unc_frac'] if col in self.filtered_levels_df.columns]
+                self.level_table.setModel(PandasTableModel(self.filtered_levels_df[cols_to_show]))
+                self.level_table.resizeColumnsToContents()
+
             else: self.level_table.setModel(None); QMessageBox.warning(self, "Data Error", f"Table at {path} is empty or missing required columns.")
         except Exception as e:
             self.level_table.setModel(None); self.current_energy_levels_df, self.filtered_levels_df = pd.DataFrame(), pd.DataFrame()
@@ -761,13 +793,18 @@ class AnalysisWindow(QMainWindow):
     def _on_level_selected_in_table(self):
         """Handles the event when a user clicks on an upper level in the level table."""
         selected_indexes = self.level_table.selectionModel().selectedRows()
-        if not selected_indexes or self.filtered_levels_df.empty: self._clear_level_details(); self.line_data_table.setModel(None); self._clear_plot(); return
+        if not selected_indexes or self.filtered_levels_df.empty: 
+            self._clear_level_details()
+            self.line_data_table.setModel(None)
+            self._clear_plot()
+            return
+            
         row = selected_indexes[0].row()
         selected_level_data = self.filtered_levels_df.iloc[row]
-        # Update the detail display boxes.
-        self.level_key_display.setText(str(selected_level_data.get('key', 'N/A'))); self.level_energy_display.setText(f"{selected_level_data.get('energy', 0.0):.3f}")
-        self.level_j_display.setText(str(selected_level_data.get('j_value', 'N/A'))); self.level_parity_display.setText(str(selected_level_data.get('parity', 'N/A')))
-        self.level_lifetime_display.setText(f"{selected_level_data.get('lifetime', 0.0):.3f}")
+        
+        # Save the key internally for saving/calculations later
+        self.current_upper_level_key = str(selected_level_data.get('key', ''))
+        
         # This is the primary trigger to build the main data table.
         self._populate_line_data_table(selected_level_data['key'])
         
@@ -842,17 +879,45 @@ class AnalysisWindow(QMainWindow):
 
            
     def _clear_level_details(self):
-        """Clears the text from the level detail display boxes."""
-        self.level_key_display.clear(); self.level_energy_display.clear(); self.level_j_display.clear(); self.level_parity_display.clear(); self.level_lifetime_display.clear()
+        """Clears the internal state when no level is selected."""
+        self.current_upper_level_key = ""
         
     def _on_data_source_table_item_changed(self, item):
         """Handles the event when a user checks/unchecks a data source, triggering a table refresh."""
+        
+        # Block signals temporarily to prevent infinite recursion when we programmatically check another box
+        self.data_source_table.blockSignals(True)
+        try:
+            col = item.column()
+            row = item.row()
+            header_label = self.data_source_table.horizontalHeaderItem(col).text()
+            
+            # Auto-check the "Raw Spectrum" box if "Cal. Linelists" is checked
+            if header_label == "Cal. Linelists" and item.checkState() == Qt.Checked:
+                raw_col = -1
+                # Dynamically find the column index for "Raw Spectrum"
+                for c in range(self.data_source_table.columnCount()):
+                    if self.data_source_table.horizontalHeaderItem(c).text() == "Raw Spectrum":
+                        raw_col = c
+                        break
+                        
+                if raw_col != -1:
+                    raw_item = self.data_source_table.item(row, raw_col)
+                    # Ensure the item exists and is user-checkable
+                    if raw_item and (raw_item.flags() & Qt.ItemIsUserCheckable):
+                        raw_item.setCheckState(Qt.Checked)
+        finally:
+            # Always restore signals no matter what
+            self.data_source_table.blockSignals(False)
+
+        # Trigger the main table and plot update as usual
         if self.level_table.selectionModel() and self.level_table.selectionModel().hasSelection():
             selected_indexes = self.level_table.selectionModel().selectedRows()
-            row = selected_indexes[0].row()
-            selected_level_data = self.filtered_levels_df.iloc[row]
+            selected_row = selected_indexes[0].row()
+            selected_level_data = self.filtered_levels_df.iloc[selected_row]
             self._populate_line_data_table(selected_level_data['key'])
-        else: self.line_data_table.setModel(None)
+        else: 
+            self.line_data_table.setModel(None)
 
     def _show_data_source_context_menu(self, position):
         """Creates a context menu for the data source table to edit metadata."""
@@ -1113,7 +1178,8 @@ class AnalysisWindow(QMainWindow):
         if self.result_df.empty or self.master_line_data_df.empty:
             QMessageBox.warning(self, "Save Error", "No results to save."); return
 
-        default_name = f"BF_analysis_{self.level_key_display.text()}_{date.today().strftime('%Y%m%d')}"
+        default_name = f"BF_analysis_{self.current_upper_level_key}_{date.today().strftime('%Y%m%d')}"
+
         analysis_name, ok = QInputDialog.getText(self, "Save Analysis", "Enter a unique name for this analysis:", text=default_name)
         
         if ok and analysis_name:
@@ -1137,7 +1203,7 @@ class AnalysisWindow(QMainWindow):
                 self.h5_manager.add_pandas_table(self.h5_filepath, analysis_group_path, "branching_fraction_results", self.result_df)
                 
                 # Attach all relevant parameters as metadata to the analysis group.
-                metadata_to_save = {'analysis_date': date.today().isoformat(), 'source_level_file': self.level_file_combo.currentText(),'source_previous_ids_file': self.prev_id_combo.currentText(), 'source_linelists': str(self._get_checked_data_paths()), 'wavenumber_tolerance': float(self.tolerance_edit.text()), 'upper_level_key': self.level_key_display.text()}
+                metadata_to_save = {'analysis_date': date.today().isoformat(), 'source_level_file': self.level_file_combo.currentText(),'source_previous_ids_file': self.prev_id_combo.currentText(), 'source_linelists': str(self._get_checked_data_paths()), 'wavenumber_tolerance': float(self.tolerance_edit.text()), 'upper_level_key':  self.current_upper_level_key}
                 self.h5_manager.attach_metadata_to_group(self.h5_filepath, analysis_group_path, metadata_to_save)
                 
                 QMessageBox.information(self, "Save Complete", f"Analysis saved to HDF5 at:\n{analysis_group_path}")

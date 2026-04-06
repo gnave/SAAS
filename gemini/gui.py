@@ -479,7 +479,7 @@ class ImportWizardDialog(QDialog):
             if col_type != "(ignore)":
                 final_df[col_type] = full_df.iloc[:, i]
         
-        numeric_cols = ['j_value', 'energy', 'parity', 'lifetime', 'wavenumber', 'wavelength', 'intensity', 'lower_level_energy', 'upper_level_energy', 'log_gf', 'transition_probability', 'lower_level_j', 'upper_level_j', 'snr', 'epstot', 'epsran']
+        numeric_cols = ['j_value', 'energy', 'parity', 'lifetime', 'lifetime_unc_frac', 'wavenumber', 'wavelength', 'intensity', 'lower_level_energy', 'upper_level_energy', 'log_gf', 'transition_probability', 'lower_level_j', 'upper_level_j', 'snr', 'epstot', 'epsran']
         
         # --- Data Type Conversion Logic ---
         for col in final_df.columns:
