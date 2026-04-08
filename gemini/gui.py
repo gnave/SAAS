@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QTableView, QRadioButton, QLineEdit, QCheckBox, QComboBox,
     QFormLayout, QLabel, QDialogButtonBox, QMessageBox, QWidget, QTextEdit,
     QTreeView, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMenu
+    QMenu, QAction
 )
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QDoubleValidator
 from PyQt5.QtCore import QAbstractTableModel, Qt, QModelIndex
@@ -71,6 +71,54 @@ class PandasModel(QAbstractTableModel):
             if orientation == Qt.Vertical:
                 return str(self._data.index[section])
         return None
+
+class FullTableWindow(QDialog):
+    """A standalone window for viewing and searching an entire dataset."""
+    def __init__(self, df, title, parent=None):
+        super().__init__(parent)
+        self.df = df
+        self.setWindowTitle(f"Full Data View: {title}")
+        self.setMinimumSize(1000, 600)
+        
+        layout = QVBoxLayout(self)
+        
+        # Search Bar
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search/Filter:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Type to filter rows...")
+        self.search_edit.textChanged.connect(self._apply_filter)
+        search_layout.addWidget(self.search_edit)
+        layout.addLayout(search_layout)
+        
+        # Table View
+        self.table_view = QTableView()
+        self.model = PandasModel(df)
+        self.table_view.setModel(self.model)
+        self.table_view.setAlternatingRowColors(True)
+        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        layout.addWidget(self.table_view)
+        
+        # Footer
+        self.status_label = QLabel(f"Showing {len(df)} rows")
+        layout.addWidget(self.status_label)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _apply_filter(self, text):
+        """Simple search filter across all columns."""
+        if not text:
+            self.table_view.setModel(PandasModel(self.df))
+            self.status_label.setText(f"Showing {len(self.df)} rows")
+            return
+        
+        # Filter rows where any column contains the search text
+        mask = self.df.apply(lambda row: row.astype(str).str.contains(text, case=False).any(), axis=1)
+        filtered_df = self.df[mask]
+        self.table_view.setModel(PandasModel(filtered_df))
+        self.status_label.setText(f"Matches: {len(filtered_df)} / {len(self.df)}")
 
 #==============================================================================
 # Standalone Dialog Windows for User Input
@@ -574,56 +622,70 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SAAS - Spectroscopy Data Manager")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(1000, 800)
         self.current_h5_file = None
         
         # --- UI Setup ---
-        central_widget = QWidget(); self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget); button_layout = QHBoxLayout()
-        create_btn = QPushButton("Create New Project..."); open_btn = QPushButton("Open Project...")
-        self.import_spectrum_btn = QPushButton("Import Main Spectrum..."); self.import_calib_spec_btn = QPushButton("Import Calib. Spectrum...")
-        self.import_lamp_cal_btn = QPushButton("Import Lamp Calib..."); self.import_table_btn = QPushButton("Import Table...")
-        self.import_linelist_btn = QPushButton("Import Raw Linelist (.lin)..."); self.import_cal_linelist_btn = QPushButton("Import Calib. Linelist (.txt)...")
-        self.run_match_btn = QPushButton("Run Wavenumber Matching..."); self.run_branching_fraction_analysis_btn = QPushButton("Run Branching Fraction Analysis...")
-        button_layout.addWidget(create_btn); button_layout.addWidget(open_btn); button_layout.addWidget(self.import_spectrum_btn); button_layout.addWidget(self.import_calib_spec_btn)
-        button_layout.addWidget(self.import_lamp_cal_btn); button_layout.addWidget(self.import_table_btn); button_layout.addWidget(self.import_linelist_btn); button_layout.addWidget(self.import_cal_linelist_btn)
-        button_layout.addStretch(); button_layout.addWidget(self.run_match_btn); button_layout.addWidget(self.run_branching_fraction_analysis_btn)
-               
-        # Main splitter divides the window into the HDF5 tree (left) and the data preview (right).
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Create the Menu Bar instead of buttons
+        self._setup_menus()
+        
+        # Main splitter divides the window into the HDF5 tree (left) and data preview (right)
         splitter = QSplitter(Qt.Horizontal)
-        self.tree_view = QTreeView(); self.tree_model = QStandardItemModel(); self.tree_view.setModel(self.tree_model); self.tree_view.setHeaderHidden(True)
-        self.tree_view.setContextMenuPolicy(Qt.CustomContextMenu); self.tree_view.customContextMenuRequested.connect(self._show_tree_context_menu)
+        self.tree_view = QTreeView()
+        self.tree_model = QStandardItemModel()
+        self.tree_view.setModel(self.tree_model)
+        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self._show_tree_context_menu)
         splitter.addWidget(self.tree_view)
         
-        # Right-hand side is a tab widget for different views of the selected item.
+        # Right-hand side is a tab widget
         self.tabs = QTabWidget()
-        data_preview_widget = QWidget(); self.data_preview_layout = QVBoxLayout(data_preview_widget)
+        data_preview_widget = QWidget()
+        self.data_preview_layout = QVBoxLayout(data_preview_widget)
         self.data_table_view = QTableView()
-        self.plot_figure = Figure(); self.plot_canvas = FigureCanvas(self.plot_figure)
-        self.plot_toolbar = NavigationToolbar(self.plot_canvas, self); self.plot_axes = self.plot_figure.add_subplot(111)
-        self.data_preview_layout.addWidget(self.data_table_view); self.data_preview_layout.addWidget(self.plot_toolbar); self.data_preview_layout.addWidget(self.plot_canvas)
+        self.plot_figure = Figure()
+        self.plot_canvas = FigureCanvas(self.plot_figure)
+        self.plot_toolbar = NavigationToolbar(self.plot_canvas, self)
+        self.plot_axes = self.plot_figure.add_subplot(111)
+        self.data_preview_layout.addWidget(self.data_table_view)
+        self.data_preview_layout.addWidget(self.plot_toolbar)
+        self.data_preview_layout.addWidget(self.plot_canvas)
         self.data_table_view.hide(); self.plot_toolbar.hide(); self.plot_canvas.hide()
-        self.attr_view = QTableWidget(); self.attr_view.setColumnCount(2); self.attr_view.setHorizontalHeaderLabels(["Attribute Name", "Value"])
-        self.tabs.addTab(data_preview_widget, "Data Preview"); self.tabs.addTab(self.attr_view, "Attributes / Metadata")
+        
+        self.attr_view = QTableWidget()
+        self.attr_view.setColumnCount(2)
+        self.attr_view.setHorizontalHeaderLabels(["Attribute Name", "Value"])
+        self.tabs.addTab(data_preview_widget, "Data Preview")
+        self.tabs.addTab(self.attr_view, "Attributes / Metadata")
         splitter.addWidget(self.tabs)
         
-        splitter.setSizes([300, 600])
-        main_layout.addLayout(button_layout); main_layout.addWidget(splitter)
+        splitter.setSizes([300, 700])
+        main_layout.addWidget(splitter)
         
-        # --- Connect Signals to Slots ---
+        # --- Initialize ---
         self.set_file_loaded_state(False)
-        create_btn.clicked.connect(self._create_file); open_btn.clicked.connect(self._open_file)
-        self.import_spectrum_btn.clicked.connect(self._show_spectrum_import_dialog); self.import_calib_spec_btn.clicked.connect(self._show_calib_spec_import_dialog)
-        self.import_lamp_cal_btn.clicked.connect(self._show_lamp_cal_import_dialog); self.import_table_btn.clicked.connect(self._show_table_import_wizard)
-        self.import_linelist_btn.clicked.connect(self._show_linelist_import_dialog); self.import_cal_linelist_btn.clicked.connect(self._show_cal_linelist_import_dialog)
-        self.run_match_btn.clicked.connect(self._show_match_dialog); self.run_branching_fraction_analysis_btn.clicked.connect(self._launch_branching_fraction_analysis)
         self.tree_view.clicked.connect(self._on_tree_item_selected)
-
+        
     def set_file_loaded_state(self, is_loaded):
-        """Enables or disables UI controls based on whether a project file is open."""
-        self.import_spectrum_btn.setEnabled(is_loaded); self.import_calib_spec_btn.setEnabled(is_loaded); self.import_lamp_cal_btn.setEnabled(is_loaded)
-        self.import_table_btn.setEnabled(is_loaded); self.import_linelist_btn.setEnabled(is_loaded); self.import_cal_linelist_btn.setEnabled(is_loaded)
-        self.run_match_btn.setEnabled(is_loaded); self.run_branching_fraction_analysis_btn.setEnabled(is_loaded)
+        """Enables or disables UI actions based on whether a project file is open."""
+        # Enable/Disable the top-level menus
+        self.import_menu.setEnabled(is_loaded)
+        self.analysis_menu.setEnabled(is_loaded)
+        
+        # Explicitly setting individual actions (optional, since menu is disabled)
+        self.import_spectrum_action.setEnabled(is_loaded)
+        self.import_calib_spec_action.setEnabled(is_loaded)
+        self.import_lamp_cal_action.setEnabled(is_loaded)
+        self.import_table_action.setEnabled(is_loaded)
+        self.import_linelist_action.setEnabled(is_loaded)
+        self.import_cal_linelist_action.setEnabled(is_loaded)
+        self.run_match_action.setEnabled(is_loaded)
+        self.run_bf_action.setEnabled(is_loaded)
 
     def _create_file(self):
         """Launches the new project dialog and creates a new HDF5 file."""
@@ -779,16 +841,28 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "No HDF5 File", "Please open an HDF5 project file first.")
 
-    # --- Context Menu for Tree View ---
     def _show_tree_context_menu(self, position):
-        """Creates and shows a right-click context menu for the tree view (e.g., for deletion)."""
         index = self.tree_view.indexAt(position)
         if not index.isValid(): return
+        
+        h5_path = index.data(Qt.UserRole)
         menu = QMenu()
+        
+        # Only show "View Full Table" if it's a dataset
+        view_full_action = None
+        with h5py.File(self.current_h5_file, 'r') as f:
+            if isinstance(f[h5_path], h5py.Dataset):
+                view_full_action = menu.addAction("View Full Table (Searchable)")
+                menu.addSeparator()
+
         delete_action = menu.addAction("Delete Selected Item")
+        
         action = menu.exec_(self.tree_view.viewport().mapToGlobal(position))
+        
         if action == delete_action:
             self._delete_selected_item(index)
+        elif action == view_full_action:
+            self._open_full_table_viewer(h5_path)
 
     def _delete_selected_item(self, index):
         """Handles the logic for deleting an item from the HDF5 file."""
@@ -805,3 +879,75 @@ class MainWindow(QMainWindow):
                 self.data_table_view.setModel(None); self.attr_view.setRowCount(0)
             else:
                 QMessageBox.critical(self, "Error", f"Failed to delete the item at {h5_path}.")
+
+    def _setup_menus(self):
+        menubar = self.menuBar()
+
+        # --- FILE MENU ---
+        file_menu = menubar.addMenu("&File")
+        
+        new_action = QAction("&New Project...", self)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(self._create_file)
+        file_menu.addAction(new_action)
+
+        open_action = QAction("&Open Project...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._open_file)
+        file_menu.addAction(open_action)
+        
+        file_menu.addSeparator()
+        exit_action = QAction("&Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # --- IMPORT MENU ---
+        self.import_menu = menubar.addMenu("&Import")
+        
+        # Submenu for Spectra
+        spec_menu = self.import_menu.addMenu("Spectra")
+        self.import_spectrum_action = QAction("Main Spectrum...", self)
+        self.import_spectrum_action.triggered.connect(self._show_spectrum_import_dialog)
+        self.import_calib_spec_action = QAction("Calibration Spectrum...", self)
+        self.import_calib_spec_action.triggered.connect(self._show_calib_spec_import_dialog)
+        spec_menu.addAction(self.import_spectrum_action)
+        spec_menu.addAction(self.import_calib_spec_action)
+
+        # Submenu for Linelists
+        line_menu = self.import_menu.addMenu("Linelists")
+        self.import_linelist_action = QAction("Raw Binary (.lin)...", self)
+        self.import_linelist_action.triggered.connect(self._show_linelist_import_dialog)
+        self.import_cal_linelist_action = QAction("Calibrated Text (.txt)...", self)
+        self.import_cal_linelist_action.triggered.connect(self._show_cal_linelist_import_dialog)
+        line_menu.addAction(self.import_linelist_action)
+        line_menu.addAction(self.import_cal_linelist_action)
+
+        self.import_table_action = QAction("Generic Table (Wizard)...", self)
+        self.import_table_action.triggered.connect(self._show_table_import_wizard)
+        self.import_menu.addAction(self.import_table_action)
+
+        self.import_lamp_cal_action = QAction("Standard Lamp Calibration...", self)
+        self.import_lamp_cal_action.triggered.connect(self._show_lamp_cal_import_dialog)
+        self.import_menu.addAction(self.import_lamp_cal_action)
+
+        # --- ANALYSIS MENU ---
+        self.analysis_menu = menubar.addMenu("&Analysis")
+        
+        self.run_match_action = QAction("Wavenumber Matching...", self)
+        self.run_match_action.triggered.connect(self._show_match_dialog)
+        self.analysis_menu.addAction(self.run_match_action)
+        
+        self.run_bf_action = QAction("Interactive Branching Fraction Analysis...", self)
+        self.run_bf_action.setShortcut("Ctrl+R")
+        self.run_bf_action.triggered.connect(self._launch_branching_fraction_analysis)
+        self.analysis_menu.addAction(self.run_bf_action)
+
+    def _open_full_table_viewer(self, h5_path):
+        """Loads the full dataset and opens it in the FullTableWindow."""
+        try:
+            df = h5_manager.read_hdf_table_robustly(self.current_h5_file, h5_path)
+            # Create a modeless window so user can keep it open while browsing others
+            self.full_view = FullTableWindow(df, h5_path, self)
+            self.full_view.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load full table:\n{e}")
