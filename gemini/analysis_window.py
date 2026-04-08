@@ -518,7 +518,15 @@ class AnalysisWindow(QMainWindow):
     def _create_menu_bar(self):
         """Creates the main menu bar (File, Debug, Help)."""
         menubar = self.menuBar()
-        file_menu = menubar.addMenu("&File"); exit_action = QAction("Exit", self); exit_action.triggered.connect(self.close); file_menu.addAction(exit_action)
+        file_menu = menubar.addMenu("&File")
+        open_action = QAction("Open Saved Analysis...", self) # NEW
+        open_action.triggered.connect(self._on_open_analysis_triggered)
+        file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
         debug_menu = menubar.addMenu("&Debug"); run_diagnostics_action = QAction("Run Diagnostics...", self); run_diagnostics_action.triggered.connect(self._run_debug_diagnostics); debug_menu.addAction(run_diagnostics_action)
         help_menu = menubar.addMenu("&Help"); help_action = QAction("About", self); help_action.triggered.connect(lambda: QMessageBox.information(self, "About", "SAAS")); help_menu.addAction(help_action)
 
@@ -554,8 +562,24 @@ class AnalysisWindow(QMainWindow):
         data_source_container = QWidget(); data_source_layout = QVBoxLayout(data_source_container)
         self.prev_id_combo = QComboBox(); self.prev_id_combo.addItem("Select Previous IDs File..."); self.prev_id_combo.currentIndexChanged.connect(self._on_prev_id_file_selected)
         data_source_layout.addWidget(QLabel("Master Previous IDs File:")); data_source_layout.addWidget(self.prev_id_combo)
-        data_source_layout.addWidget(QLabel("Select Data for Comparison/Plotting:"))
-        self.data_source_table = QTableWidget(); self.data_source_table.itemChanged.connect(self._on_data_source_table_item_changed)
+
+# Create a mini-toolbar for the Data Source section
+        ds_header_layout = QHBoxLayout()
+        ds_label = QLabel("Data Sources:")
+        ds_label.setStyleSheet("font-weight: bold;")
+        ds_header_layout.addWidget(ds_label)
+        
+        self.edit_bands_btn = QPushButton("Edit Band Limits")
+        self.edit_bands_btn.setToolTip("Click to configure the wavenumber range for any spectrum")
+        self.edit_bands_btn.setMaximumWidth(120)
+        self.edit_bands_btn.clicked.connect(self._on_edit_bands_btn_clicked)
+        ds_header_layout.addWidget(self.edit_bands_btn)
+        
+        data_source_layout.addLayout(ds_header_layout)
+        
+        self.data_source_table = QTableWidget()
+        self.data_source_table.itemChanged.connect(self._on_data_source_table_item_changed)
+
         self.data_source_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.data_source_table.customContextMenuRequested.connect(self._show_data_source_context_menu)
         data_source_layout.addWidget(self.data_source_table)
@@ -845,14 +869,27 @@ class AnalysisWindow(QMainWindow):
         """Scans the HDF5 file and populates the data source table with available items."""
         try:
             with h5py.File(self.h5_filepath, 'r') as f:
-                if '/Spectra' not in f: self.data_source_table.clear(); return
-                spectra_names, column_labels = sorted(list(f['/Spectra'].keys())), list(self.DATA_SOURCE_COLUMNS.keys())
-                self.data_source_table.setRowCount(len(spectra_names)); self.data_source_table.setColumnCount(len(column_labels))
-                self.data_source_table.setVerticalHeaderLabels(spectra_names); self.data_source_table.setHorizontalHeaderLabels(column_labels)
+                if '/Spectra' not in f: 
+                    self.data_source_table.clear()
+                    return
+                
+                spectra_names = sorted(list(f['/Spectra'].keys()))
+                column_labels = list(self.DATA_SOURCE_COLUMNS.keys())
+                
+                self.data_source_table.setRowCount(len(spectra_names))
+                self.data_source_table.setColumnCount(len(column_labels))
+                self.data_source_table.setVerticalHeaderLabels(spectra_names)
+                self.data_source_table.setHorizontalHeaderLabels(column_labels)
+                
                 for r, spectrum_name in enumerate(spectra_names):
                     for c, col_label in enumerate(column_labels):
-                        hdf5_group_name = self.DATA_SOURCE_COLUMNS[col_label]; base_path = f"/Spectra/{spectrum_name}/{hdf5_group_name}"
-                        item = QTableWidgetItem(); item.setFlags(item.flags() & ~Qt.ItemIsEnabled); item.setBackground(QBrush(QColor('lightGray')))
+                        hdf5_group_name = self.DATA_SOURCE_COLUMNS[col_label]
+                        base_path = f"/Spectra/{spectrum_name}/{hdf5_group_name}"
+                        
+                        item = QTableWidgetItem()
+                        item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+                        item.setBackground(QBrush(QColor('lightGray')))
+                        
                         if base_path in f:
                             dset_path, item_text = "", ""
                             if hdf5_group_name == "Raw_Data":
@@ -861,16 +898,32 @@ class AnalysisWindow(QMainWindow):
                             else:
                                 sub_datasets = list(f[base_path].keys())
                                 if sub_datasets:
-                                    first_dset_name = sub_datasets[0]; dset_path = f"{base_path}/{first_dset_name}/table"
+                                    first_dset_name = sub_datasets[0]
+                                    dset_path = f"{base_path}/{first_dset_name}/table"
                                     if dset_path in f: item_text = first_dset_name
-                            if item_text and dset_path:
-                                # Store the HDF5 path in the item's UserRole for later retrieval.
-                                item.setText(""), item.setToolTip(dset_path), item.setData(Qt.UserRole, dset_path)
+                            
+                            if item_text and dset_path in f:
+                                # --- FIX: Extract band metadata for the tooltip ---
+                                attrs = f[dset_path].attrs
+                                # Use wstart as fallback for bandlo, and wend for bandhi
+                                b_lo = attrs.get('bandlo', attrs.get('wstart', 0.0))
+                                b_hi = attrs.get('bandhi', attrs.get('wend', b_lo + 30000.0))
+                                
+                                band_tooltip = f"Path: {dset_path}\nBands: {float(b_lo):.1f} to {float(b_hi):.1f} cm⁻¹"
+                                
+                                item.setText("")
+                                item.setToolTip(band_tooltip)
+                                item.setData(Qt.UserRole, dset_path)
                                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                                item.setBackground(QBrush(QColor('white'))); item.setCheckState(Qt.Unchecked)
+                                item.setBackground(QBrush(QColor('white')))
+                                item.setCheckState(Qt.Unchecked)
+                                
                         self.data_source_table.setItem(r, c, item)
-            self.data_source_table.resizeColumnsToContents(); self.data_source_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        except Exception as e: QMessageBox.critical(self, "HDF5 Scan Error", f"Failed to populate data source table: {e}")
+            
+            self.data_source_table.resizeColumnsToContents()
+            self.data_source_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        except Exception as e: 
+            QMessageBox.critical(self, "HDF5 Scan Error", f"Failed to populate data source table: {e}")
 
     def _get_checked_data_paths(self):
         """Retrieves the HDF5 paths of all data sources checked by the user."""
@@ -1021,7 +1074,6 @@ class AnalysisWindow(QMainWindow):
             QMessageBox.critical(self, "Analysis Error", f"An error in _populate_line_data_table: {e}")
             self.line_data_table.setModel(None); self._clear_plot()
 
-           
     def _clear_level_details(self):
         """Clears the internal state when no level is selected."""
         self.current_upper_level_key = ""
@@ -1421,3 +1473,120 @@ class AnalysisWindow(QMainWindow):
         layout.addWidget(report_text); button_box = QDialogButtonBox(QDialogButtonBox.Ok)
         button_box.accepted.connect(dialog.accept); layout.addWidget(button_box)
         dialog.exec_()
+
+    def _on_edit_bands_btn_clicked(self):
+        """Logic for the 'Edit Bands' button."""
+        # Check if a row is currently selected in the source table
+        selected_ranges = self.data_source_table.selectedRanges()
+        
+        if selected_ranges:
+            # Use the spectrum from the first selected row
+            row = selected_ranges[0].topRow()
+            spectrum_name = self.data_source_table.verticalHeaderItem(row).text()
+            self._edit_spectrum_bands(spectrum_name)
+        else:
+            # If nothing is selected, let the user pick from a list
+            spectra = []
+            for r in range(self.data_source_table.rowCount()):
+                spectra.append(self.data_source_table.verticalHeaderItem(r).text())
+            
+            if not spectra:
+                QMessageBox.warning(self, "Error", "No spectra available to configure.")
+                return
+
+            item, ok = QInputDialog.getItem(self, "Select Spectrum", 
+                                            "Which spectrum do you want to configure?", 
+                                            spectra, 0, False)
+            if ok and item:
+                self._edit_spectrum_bands(item)
+
+    def _on_open_analysis_triggered(self):
+        """Displays a dialog to select and load a previously saved analysis."""
+        base_group = "/Branching_Fraction_Analyses"
+        analyses = []
+        try:
+            with h5py.File(self.h5_filepath, 'r') as f:
+                if base_group in f:
+                    analyses = sorted(list(f[base_group].keys()))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not read saved analyses: {e}")
+            return
+
+        if not analyses:
+            QMessageBox.information(self, "No Saved Analyses", "No saved analyses were found in this project.")
+            return
+
+        item, ok = QInputDialog.getItem(self, "Open Analysis", "Select an analysis to load:", analyses, 0, False)
+        if ok and item:
+            self._load_saved_analysis(item)
+
+    def _load_saved_analysis(self, analysis_name: str):
+        """Restores the UI state and data from a saved analysis group."""
+        path = f"/Branching_Fraction_Analyses/{analysis_name}"
+        try:
+            with h5py.File(self.h5_filepath, 'r') as f:
+                group = f[path]
+                attrs = group.attrs
+                
+                # 1. Restore the simple settings
+                self.tolerance_edit.setText(str(attrs.get('wavenumber_tolerance', "0.1")))
+                
+                # 2. Update the Comboboxes
+                # Note: We block signals so we don't trigger intermediate auto-refreshes
+                self.level_file_combo.blockSignals(True)
+                self.prev_id_combo.blockSignals(True)
+                
+                lvl_file = attrs.get('source_level_file')
+                if lvl_file: self.level_file_combo.setCurrentText(lvl_file)
+                self._on_level_file_selected() # Populate the levels table
+                
+                ids_file = attrs.get('source_previous_ids_file')
+                if ids_file: self.prev_id_combo.setCurrentText(ids_file)
+                self._on_prev_id_file_selected() # Load the ID data
+                
+                self.level_file_combo.blockSignals(False)
+                self.prev_id_combo.blockSignals(False)
+
+                # 3. Find and select the correct Upper Level in the table
+                target_key = attrs.get('upper_level_key')
+                if target_key:
+                    model = self.level_table.model()
+                    for r in range(model.rowCount()):
+                        if str(model.index(r, 0).data()) == target_key:
+                            self.level_table.selectRow(r)
+                            self.current_upper_level_key = target_key
+                            break
+
+                # 4. Check the correct Spectrum Data Sources
+                # source_linelists is saved as a string representation of a list
+                raw_paths = attrs.get('source_linelists', "[]")
+                # Simple cleanup to turn the string back into a real list of paths
+                checked_paths = raw_paths.strip("[]").replace("'", "").split(", ")
+                
+                self.data_source_table.blockSignals(True)
+                for r in range(self.data_source_table.rowCount()):
+                    for c in range(self.data_source_table.columnCount()):
+                        item = self.data_source_table.item(r, c)
+                        if item:
+                            path_in_table = item.data(Qt.UserRole)
+                            item.setCheckState(Qt.Checked if path_in_table in checked_paths else Qt.Unchecked)
+                self.data_source_table.blockSignals(False)
+
+                # 5. LOAD THE ACTUAL DATA (The most important part)
+                # We load the saved 'calculation_input_data' table directly.
+                # This preserves normalization and exclusion states exactly as they were.
+                input_data_path = f"{path}/calculation_input_data/table"
+                self.master_line_data_df = self.h5_manager.read_hdf_table_robustly(self.h5_filepath, input_data_path)
+                
+                # Recalculate highlighting for the loaded data
+                self.highlight_df = self.analysis_module.calculate_outliers(self.master_line_data_df, self.h5_filepath)
+                
+                # Update the display
+                model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
+                self.line_data_table.setModel(model)
+                self._format_table_columns()
+                
+                QMessageBox.information(self, "Load Successful", f"Analysis '{analysis_name}' has been restored.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load analysis: {e}")

@@ -588,9 +588,7 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(create_btn); button_layout.addWidget(open_btn); button_layout.addWidget(self.import_spectrum_btn); button_layout.addWidget(self.import_calib_spec_btn)
         button_layout.addWidget(self.import_lamp_cal_btn); button_layout.addWidget(self.import_table_btn); button_layout.addWidget(self.import_linelist_btn); button_layout.addWidget(self.import_cal_linelist_btn)
         button_layout.addStretch(); button_layout.addWidget(self.run_match_btn); button_layout.addWidget(self.run_branching_fraction_analysis_btn)
-        
-        self.file_label = QLabel("No project file loaded."); self.file_label.setStyleSheet("font-style: italic; color: grey;")
-        
+               
         # Main splitter divides the window into the HDF5 tree (left) and the data preview (right).
         splitter = QSplitter(Qt.Horizontal)
         self.tree_view = QTreeView(); self.tree_model = QStandardItemModel(); self.tree_view.setModel(self.tree_model); self.tree_view.setHeaderHidden(True)
@@ -610,7 +608,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.tabs)
         
         splitter.setSizes([300, 600])
-        main_layout.addLayout(button_layout); main_layout.addWidget(self.file_label); main_layout.addWidget(splitter)
+        main_layout.addLayout(button_layout); main_layout.addWidget(splitter)
         
         # --- Connect Signals to Slots ---
         self.set_file_loaded_state(False)
@@ -646,8 +644,10 @@ class MainWindow(QMainWindow):
     def set_current_file(self, filepath):
         """Sets the active project file and refreshes the main UI."""
         self.current_h5_file = filepath
-        self.file_label.setText(f"Current Project: {filepath}")
-        self.file_label.setStyleSheet("")
+        
+        # Update the Window Title instead of a label
+        self.setWindowTitle(f"SAAS - Project: {filepath}")
+        
         self.set_file_loaded_state(True)
         self._populate_tree_view()
 
