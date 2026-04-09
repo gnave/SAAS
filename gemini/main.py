@@ -6,18 +6,16 @@ import importers
 import versioning
 import sys
 
-# The 'click' library is used to create a clean and composable command-line interface (CLI).
-# The `@click.group()` decorator turns the `cli` function into a container for other commands.
-@click.group()
-def cli():
+# Change the decorator to invoke the GUI if no command is provided
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """
-    SAAS: A Command-Line Tool for Managing Spectroscopy Data and Analysis.
-
-    This tool provides both a command-line interface for scripting and a graphical
-    user interface for interactive work. Use `[COMMAND] --help` for more
-    information on a specific command.
+    SAAS: Atomic Spectra Analysis Tool.
+    Running without arguments launches the GUI by default.
     """
-    pass
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(gui)
 
 @cli.command()
 def gui():

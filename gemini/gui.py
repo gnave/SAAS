@@ -28,6 +28,16 @@ import importers
 import h5_manager
 import analysis
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 #==============================================================================
 # A model to display a Pandas DataFrame in a QTableView
 #==============================================================================
@@ -621,8 +631,11 @@ class MainWindow(QMainWindow):
     """
     def __init__(self):
         super().__init__()
+        QApplication.setDesktopFileName("SAAS") 
         self.setWindowTitle("SAAS - Spectroscopy Data Manager")
         self.setMinimumSize(1000, 800)
+        # --- SET THE ICON AT RUNTIME ---
+        self.setWindowIcon(QIcon(resource_path('SAAS_logo.png')))
         self.current_h5_file = None
         
         # --- UI Setup ---
