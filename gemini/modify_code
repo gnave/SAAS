@@ -1,0 +1,6 @@
+modify_code
+{
+  "replace_from": "    define_group_schema(filepath, '/Levels', \n                        ['key', 'energy', 'j_value', 'parity', 'lifetime', 'designation'])",
+  "replace_to": "    define_group_schema(filepath, '/Levels', \n                        ['key', 'energy', 'j_value', 'parity', 'lifetime', 'lifetime_unc_frac', 'designation'])",
+  "filepath": "h5_manager.py"
+}
