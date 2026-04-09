@@ -1,6 +1,8 @@
 # SAAS - Atomic Spectra Analysis Tool
 
-SAAS is a standalone tool for managing spectroscopy data and performing branching fraction analysis.
+SAAS is a standalone tool for managing spectroscopic data. It currently can perform branching fraction analysis of files in a hdf5 file
+
+Directory 'data' contains test data files for the program. The file 'test.h5' contains a complete set of data for Cr II branching fraction analysis using the files in the data directory.
 
 ## Prerequisites
 * **Python 3.8+**
