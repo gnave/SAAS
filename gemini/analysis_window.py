@@ -850,58 +850,148 @@ class AnalysisWindow(QMainWindow):
     # --- PLOTTING ---
 
     def _on_line_selected(self, idx):
+        """Triggers the plot update when a line is clicked in the main table."""
         if not idx.isValid():
             return
         if self.master_line_data_df.empty:
             return
-        wn = self.master_line_data_df.iloc[idx.row()].get('wavenumber')
-        try:
-            self._update_plot(float(wn), self._get_checked_data_paths(), self.master_line_data_df.iloc[idx.row()])
-        except Exception:
+            
+        line_data = self.master_line_data_df.iloc[idx.row()]
+        wavenumber = line_data.get('wavenumber')
+        
+        if wavenumber is not None:
+            try:
+                wavenumber_float = float(wavenumber)
+                self._update_plot(wavenumber_float, self._get_checked_data_paths(), line_data)
+            except (ValueError, TypeError):
+                self._clear_plot()
+        else:
             self._clear_plot()
 
-    def _update_plot(self, t_wn, paths, ld=None):
+    def _update_plot(self, target_wn, paths, ld=None):
+        """Restores side-by-side plots and informative legends."""
         self.figure.clear()
-        cc = plt.rcParams['axes.prop_cycle'].by_key()['color']
-        raw_ps = [p for p in paths if 'Raw_Data' in p]
-        linelist_paths = [p for p in paths if 'Calibrated' in p or 'Identified' in p]
-        max_fwhm = 0.0
-        tol = float(self.tolerance_edit.text() or 0.1)
+        color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
         
+        raw_paths = [p for p in paths if 'Raw_Data' in p]
+        linelist_paths = [p for p in paths if 'Calibrated' in p or 'Identified' in p]
+        
+        # 1. Determine plot range based on line width (FWHM)
+        max_fwhm = 0.0
+        tolerance = float(self.tolerance_edit.text() or 0.1)
         for p in linelist_paths:
             try:
                 df = h5_manager.read_hdf_table_robustly(self.h5_filepath, p)
-                df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
-                d = np.abs(df['w'] - t_wn)
-                if d.min() <= tol:
-                    max_fwhm = max(max_fwhm, df.loc[d.idxmin(), 'width'])
+                if 'wavenumber' in df.columns and 'width' in df.columns:
+                    df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
+                    diffs = np.abs(df['w'] - target_wn)
+                    if diffs.min() <= tolerance:
+                        idx_match = diffs.idxmin()
+                        max_fwhm = max(max_fwhm, df.loc[idx_match, 'width'])
             except Exception:
                 pass
-                
-        rng = (5.0 * (max_fwhm/1000.0)) if max_fwhm > 0 else 5.0
-        loaded = False
-        ax = self.figure.add_subplot(1, 1, 1)
-        for i, p in enumerate(raw_ps):
+        
+        # Range is 5 times the FWHM (mK -> cm-1) or 2.0 cm-1 default
+        rng = (5.0 * (max_fwhm / 1000.0)) if max_fwhm > 0 else 2.0
+        
+        # 2. Setup Axes (Overlay vs Side-by-Side)
+        num_raw = len(raw_paths)
+        use_separate = self.separate_plots_checkbox.isChecked()
+        
+        axes = []
+        if use_separate and num_raw > 0:
+            for i in range(num_raw):
+                # 1 row, num_raw columns, index i+1 (SIDE-BY-SIDE)
+                axes.append(self.figure.add_subplot(1, num_raw, i + 1))
+        else:
+            axes = [self.figure.add_subplot(1, 1, 1)]
+
+        data_loaded = False
+        
+        # 3. Plotting Loop
+        for i, p in enumerate(raw_paths):
             try:
-                sn = p.split('/')[2]
-                ex_key = f"{sn}\nExcluded"
-                ex = bool(ld is not None and ld.get(ex_key, False))
+                # Select the correct axis
+                ax = axes[i] if use_separate else axes[0]
+                
+                spectrum_name = p.split('/')[2]
+                excluded_key = f"{spectrum_name}\nExcluded"
+                is_excluded = bool(ld is not None and ld.get(excluded_key, False))
+                
                 with h5py.File(self.h5_filepath, 'r') as f:
-                    ds = f[p]
-                    a = ds.attrs
-                    d_raw = ds[:] * a.get('rdsclfct', 1.0)
-                    x = (a.get('wstart', 0.0) + np.arange(len(d_raw)) * a.get('delw', 1.0)) * (1.0 + a.get('wavcorr', 0.0))
-                    m = (x >= t_wn - rng) & (x <= t_wn + rng)
-                    if np.any(m):
-                        c = 'lightgray' if ex else cc[i % len(cc)]
-                        al = 0.5 if ex else 0.7
-                        ax.plot(x[m], d_raw[m], color=c, alpha=al, label=sn)
+                    dataset = f[p]
+                    attrs = dataset.attrs
+                    
+                    scale = attrs.get('rdsclfct', 1.0)
+                    wstart = attrs.get('wstart', 0.0)
+                    delw = attrs.get('delw', 1.0)
+                    wavcorr = attrs.get('wavcorr', 0.0)
+                    
+                    raw_y = dataset[:]
+                    y = raw_y * scale
+                    
+                    x_base = wstart + np.arange(len(raw_y)) * delw
+                    x = x_base * (1.0 + wavcorr)
+                    
+                    mask = (x >= target_wn - rng) & (x <= target_wn + rng)
+                    
+                    if np.any(mask):
+                        label = spectrum_name
+                        if is_excluded:
+                            label += " (Excluded)"
+                            line_color = 'lightgray'
+                            alpha = 0.5
+                        else:
+                            line_color = color_cycle[i % len(color_cycle)]
+                            alpha = 0.8
+                            
+                        ax.plot(x[mask], y[mask], color=line_color, alpha=alpha, label=label)
+                        ax.axvline(target_wn, color='red', linestyle='--', alpha=0.4)
                         ax.grid(True)
-                        loaded = True
+                        data_loaded = True
             except Exception:
                 pass
-        if loaded:
+
+        # 4. Finalize Figure (Labels and Legends)
+        if data_loaded:
+            if use_separate:
+                # Add titles and legends to individual boxes
+                for ax in axes:
+                    ax.legend(loc='upper right', fontsize='x-small')
+                # Use figure-level labels for clean look
+                self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
+                self.figure.supylabel('Intensity')
+            else:
+                # Standard single-axis labels
+                axes[0].set_xlabel(r'Wavenumber (cm$^{-1}$)')
+                axes[0].set_ylabel('Intensity')
+                axes[0].legend(loc='upper right')
+                
             self.figure.tight_layout()
+            self.canvas.draw()
+        else:
+            temp_ax = self.figure.add_subplot(1, 1, 1)
+            temp_ax.text(0.5, 0.5, "No Spectrum Data in range", ha='center', va='center')
+            self.canvas.draw()
+
+        # 4. Finalize Figure (Labels and Legends)
+        if data_loaded:
+            if use_separate:
+                for ax in axes:
+                    ax.legend(loc='upper right', fontsize='small')
+                self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
+                self.figure.supylabel('Intensity')
+            else:
+                axes[0].set_xlabel(r'Wavenumber (cm$^{-1}$)')
+                axes[0].set_ylabel('Intensity')
+                axes[0].legend(loc='upper right')
+                
+            self.figure.tight_layout()
+            self.canvas.draw()
+        else:
+            # Fallback message
+            temp_ax = self.figure.add_subplot(1, 1, 1)
+            temp_ax.text(0.5, 0.5, "No Spectrum Data in range", ha='center', va='center')
             self.canvas.draw()
 
     def _clear_plot(self):
