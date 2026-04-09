@@ -1,6 +1,8 @@
 # SAAS
 Software for Analysis of Atomic Spectra
 
-This directory contains initial code created with Claude.ai to provide an import wizard for various file 
-formats that we use into an hdf5 file. The main code is in the directory'hdf5_importer'. Run it using:
+Directory hdf5_importer contains initial code created with Claude.ai to provide an import wizard for various file 
+formats that we use into an hdf5 file. Run it using:
 python run_wizard.py
+
+Directory gemini contains the SAAS code built using Google AI studio. Follow the instructions in the README in that directory.
