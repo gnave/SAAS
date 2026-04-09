@@ -2,16 +2,19 @@
 import sys
 import os
 
-# --- BUNDLE DLL/SO FIX ---
+# --- STANDALONE BUNDLE & GRAPHICS FIX ---
 if getattr(sys, 'frozen', False):
-    # Get the temp folder path
     bundle_dir = sys._MEIPASS
-    # Add bundle dir to library search path for the OS
     os.environ['LD_LIBRARY_PATH'] = bundle_dir + ":" + os.environ.get('LD_LIBRARY_PATH', '')
-    # Add to python path
     if bundle_dir not in sys.path:
         sys.path.insert(0, bundle_dir)
-# -------------------------
+
+# NEW: Force X11 mode to prevent Wayland colored noise/artifacts
+# This is a standard fix for Matplotlib + PyQt5 apps on modern Linux
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+# Disable buggy hardware acceleration that causes the "colored pattern"
+os.environ["QT_XCB_GL_INTEGRATION"] = "none"
+# -----------------------------------------
 
 import click
 import h5_manager

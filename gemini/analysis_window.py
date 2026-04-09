@@ -4,7 +4,8 @@ from PyQt5.QtWidgets import (
     QTableView, QTreeView, QSplitter, QDockWidget, QPushButton, QLineEdit,
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
-    QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader, QApplication
+    QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader, QApplication,
+    QScrollArea, QFrame
 )
 from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel, QRect
 from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush, QPainter 
@@ -490,56 +491,50 @@ class AnalysisWindow(QMainWindow):
         self.side_panel_splitter.addWidget(dsc)
         return self.side_panel_splitter
 
+    # --- ACTION HANDLERS ---
+
     def _create_central_content_widget(self):
+        """Creates the right-hand panel with a robust scrollable plot area."""
         self.central_splitter = QSplitter(Qt.Vertical)
         
-        tc = QWidget()
-        tl = QVBoxLayout(tc)
-        tl.setContentsMargins(0, 0, 0, 0)
-        
+        # --- [Table Section Code - Unchanged] ---
+        tc = QWidget(); tl = QVBoxLayout(tc); tl.setContentsMargins(0, 0, 0, 0)
         bl = QHBoxLayout()
-        self.run_analysis_btn = QPushButton("Calculate BFs")
-        self.run_analysis_btn.clicked.connect(self._calculate_clicked)
-        self.save_results_btn = QPushButton("Save to HDF5")
-        self.save_results_btn.clicked.connect(self._save_results_clicked)
-        self.save_results_btn.setEnabled(False)
-        self.copy_table_btn = QPushButton("Copy Table")
-        self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
+        self.run_analysis_btn = QPushButton("Calculate BFs"); self.run_analysis_btn.clicked.connect(self._calculate_clicked)
+        self.save_results_btn = QPushButton("Save to HDF5"); self.save_results_btn.clicked.connect(self._save_results_clicked); self.save_results_btn.setEnabled(False)
+        self.copy_table_btn = QPushButton("Copy Table"); self.copy_table_btn.clicked.connect(self._copy_table_to_clipboard)
+        bl.addWidget(self.run_analysis_btn); bl.addWidget(self.save_results_btn); bl.addWidget(self.copy_table_btn); bl.addStretch(); tl.addLayout(bl)
+        self.line_data_table = QTableView(); self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection); self.custom_header = MultiLevelHeaderView(Qt.Horizontal, self.line_data_table); self.line_data_table.setHorizontalHeader(self.custom_header); self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected); self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu); self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu); tl.addWidget(self.line_data_table); self.central_splitter.addWidget(tc)
         
-        bl.addWidget(self.run_analysis_btn)
-        bl.addWidget(self.save_results_btn)
-        bl.addWidget(self.copy_table_btn)
-        bl.addStretch()
-        tl.addLayout(bl)
-        
-        self.line_data_table = QTableView()
-        self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.custom_header = MultiLevelHeaderView(Qt.Horizontal, self.line_data_table)
-        self.line_data_table.setHorizontalHeader(self.custom_header)
-        self.line_data_table.setAlternatingRowColors(True)
-        self.line_data_table.clicked.connect(self._on_line_selected)
-        self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu)
-        tl.addWidget(self.line_data_table)
-        self.central_splitter.addWidget(tc)
-        
-        mpw = QWidget()
-        pl = QVBoxLayout(mpw)
-        pl.setContentsMargins(0, 0, 0, 0)
+        # --- Fixed Plot Section ---
+        plot_container = QWidget()
+        pcl = QVBoxLayout(plot_container)
+        pcl.setContentsMargins(0, 0, 0, 0)
+        pcl.setSpacing(0)
+
         self.figure = Figure(figsize=(5, 4), dpi=100)
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
-        self.ax = self.figure.add_subplot(111)
-        pl.addWidget(self.toolbar)
-        pl.addWidget(self.canvas)
-        self.central_splitter.addWidget(mpw)
+        pcl.addWidget(self.toolbar)
+
+        self.plot_scroll_area = QScrollArea()
+        # This is critical: Don't let the scroll area force the widget to be small
+        self.plot_scroll_area.setWidgetResizable(True) 
+        self.plot_scroll_area.setFrameShape(QFrame.NoFrame)
         
+        self.plot_scroll_area.setStyleSheet("background-color: white;")
+        self.plot_scroll_area.viewport().setStyleSheet("background-color: white;")
+        self.plot_scroll_area.viewport().setAutoFillBackground(True)
+        
+        # Ensure the canvas itself is also opaque
+        self.canvas.setStyleSheet("background-color: white;")
+        self.canvas.setAutoFillBackground(True)      
+        self.plot_scroll_area.setWidget(self.canvas)
+        pcl.addWidget(self.plot_scroll_area)
+        
+        self.central_splitter.addWidget(plot_container)
         return self.central_splitter
-
-    # --- ACTION HANDLERS ---
-
+    
     def _normalize_intensities(self, row):
         try:
             norm_df = self.analysis_module.normalize_intensities_by_reference_line(self.master_line_data_df, row)
@@ -869,129 +864,82 @@ class AnalysisWindow(QMainWindow):
             self._clear_plot()
 
     def _update_plot(self, target_wn, paths, ld=None):
-        """Restores side-by-side plots and informative legends."""
+        """Plots spectra and forces Qt to show scrollbars for wide layouts."""
         self.figure.clear()
-        color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        self.figure.patch.set_facecolor('white') 
+        self.figure.patch.set_alpha(1.0)
+
+        cc = plt.rcParams['axes.prop_cycle'].by_key()['color']
         
-        raw_paths = [p for p in paths if 'Raw_Data' in p]
+        raw_ps = [p for p in paths if 'Raw_Data' in p]
         linelist_paths = [p for p in paths if 'Calibrated' in p or 'Identified' in p]
         
-        # 1. Determine plot range based on line width (FWHM)
+        # 1. Get width from linelist
         max_fwhm = 0.0
-        tolerance = float(self.tolerance_edit.text() or 0.1)
+        tol = float(self.tolerance_edit.text() or 0.1)
         for p in linelist_paths:
             try:
                 df = h5_manager.read_hdf_table_robustly(self.h5_filepath, p)
                 if 'wavenumber' in df.columns and 'width' in df.columns:
                     df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
-                    diffs = np.abs(df['w'] - target_wn)
-                    if diffs.min() <= tolerance:
-                        idx_match = diffs.idxmin()
-                        max_fwhm = max(max_fwhm, df.loc[idx_match, 'width'])
-            except Exception:
-                pass
+                    d = np.abs(df['w'] - target_wn)
+                    if d.min() <= tol:
+                        max_fwhm = max(max_fwhm, df.loc[d.idxmin(), 'width'])
+            except Exception: pass
         
-        # Range is 5 times the FWHM (mK -> cm-1) or 2.0 cm-1 default
         rng = (5.0 * (max_fwhm / 1000.0)) if max_fwhm > 0 else 2.0
         
-        # 2. Setup Axes (Overlay vs Side-by-Side)
-        num_raw = len(raw_paths)
+        # 2. Handle Sizing
+        num_raw = len(raw_ps)
         use_separate = self.separate_plots_checkbox.isChecked()
         
-        axes = []
-        if use_separate and num_raw > 0:
-            for i in range(num_raw):
-                # 1 row, num_raw columns, index i+1 (SIDE-BY-SIDE)
-                axes.append(self.figure.add_subplot(1, num_raw, i + 1))
+        # Define minimum width in pixels per plot
+        PX_PER_PLOT = 450 
+
+        if use_separate and num_raw > 1:
+            total_px_width = num_raw * PX_PER_PLOT
+            # Force the internal Matplotlib size
+            self.figure.set_size_inches(total_px_width / 100.0, 4.0)
+            # Force the external Qt Widget size (This triggers the scrollbar!)
+            self.canvas.setMinimumWidth(total_px_width)
+            axes = [self.figure.add_subplot(1, num_raw, i+1) for i in range(num_raw)]
         else:
+            # Revert to standard behavior (fit to window)
+            self.canvas.setMinimumWidth(0) 
+            self.figure.set_size_inches(8.0, 4.0)
             axes = [self.figure.add_subplot(1, 1, 1)]
 
         data_loaded = False
-        
         # 3. Plotting Loop
-        for i, p in enumerate(raw_paths):
+        for i, p in enumerate(raw_ps):
             try:
-                # Select the correct axis
                 ax = axes[i] if use_separate else axes[0]
-                
-                spectrum_name = p.split('/')[2]
-                excluded_key = f"{spectrum_name}\nExcluded"
-                is_excluded = bool(ld is not None and ld.get(excluded_key, False))
+                sn = p.split('/')[2]
+                ex = bool(ld is not None and ld.get(f"{sn}\nExcluded", False))
                 
                 with h5py.File(self.h5_filepath, 'r') as f:
-                    dataset = f[p]
-                    attrs = dataset.attrs
+                    ds = f[p]; a = ds.attrs
+                    y = ds[:] * a.get('rdsclfct', 1.0)
+                    x = (a.get('wstart', 0.0) + np.arange(len(y)) * a.get('delw', 1.0)) * (1.0 + a.get('wavcorr', 0.0))
+                    m = (x >= target_wn - rng) & (x <= target_wn + rng)
                     
-                    scale = attrs.get('rdsclfct', 1.0)
-                    wstart = attrs.get('wstart', 0.0)
-                    delw = attrs.get('delw', 1.0)
-                    wavcorr = attrs.get('wavcorr', 0.0)
-                    
-                    raw_y = dataset[:]
-                    y = raw_y * scale
-                    
-                    x_base = wstart + np.arange(len(raw_y)) * delw
-                    x = x_base * (1.0 + wavcorr)
-                    
-                    mask = (x >= target_wn - rng) & (x <= target_wn + rng)
-                    
-                    if np.any(mask):
-                        label = spectrum_name
-                        if is_excluded:
-                            label += " (Excluded)"
-                            line_color = 'lightgray'
-                            alpha = 0.5
-                        else:
-                            line_color = color_cycle[i % len(color_cycle)]
-                            alpha = 0.8
-                            
-                        ax.plot(x[mask], y[mask], color=line_color, alpha=alpha, label=label)
-                        ax.axvline(target_wn, color='red', linestyle='--', alpha=0.4)
+                    if np.any(m):
+                        c = 'lightgray' if ex else cc[i % len(cc)]
+                        ax.plot(x[m], y[m], color=c, alpha=0.7, label=sn + (" (Excl)" if ex else ""))
+                        ax.axvline(target_wn, color='red', linestyle='--', alpha=0.3)
                         ax.grid(True)
+                        ax.legend(loc='upper right', fontsize='x-small')
                         data_loaded = True
-            except Exception:
-                pass
+            except Exception: pass
 
-        # 4. Finalize Figure (Labels and Legends)
         if data_loaded:
-            if use_separate:
-                # Add titles and legends to individual boxes
-                for ax in axes:
-                    ax.legend(loc='upper right', fontsize='x-small')
-                # Use figure-level labels for clean look
-                self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
-                self.figure.supylabel('Intensity')
-            else:
-                # Standard single-axis labels
-                axes[0].set_xlabel(r'Wavenumber (cm$^{-1}$)')
-                axes[0].set_ylabel('Intensity')
-                axes[0].legend(loc='upper right')
-                
+            self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
+            self.figure.supylabel('Intensity')
             self.figure.tight_layout()
             self.canvas.draw()
         else:
-            temp_ax = self.figure.add_subplot(1, 1, 1)
-            temp_ax.text(0.5, 0.5, "No Spectrum Data in range", ha='center', va='center')
-            self.canvas.draw()
-
-        # 4. Finalize Figure (Labels and Legends)
-        if data_loaded:
-            if use_separate:
-                for ax in axes:
-                    ax.legend(loc='upper right', fontsize='small')
-                self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
-                self.figure.supylabel('Intensity')
-            else:
-                axes[0].set_xlabel(r'Wavenumber (cm$^{-1}$)')
-                axes[0].set_ylabel('Intensity')
-                axes[0].legend(loc='upper right')
-                
-            self.figure.tight_layout()
-            self.canvas.draw()
-        else:
-            # Fallback message
-            temp_ax = self.figure.add_subplot(1, 1, 1)
-            temp_ax.text(0.5, 0.5, "No Spectrum Data in range", ha='center', va='center')
+            ax = self.figure.add_subplot(1,1,1)
+            ax.text(0.5, 0.5, "No Data", ha='center', va='center')
             self.canvas.draw()
 
     def _clear_plot(self):
