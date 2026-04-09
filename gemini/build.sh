@@ -1,23 +1,20 @@
 #!/bin/bash
 
-# --- SAAS Build & Install Script ---
 APP_NAME="SAAS"
 LOGO_NAME="SAAS_logo.png"
 
-echo "--- Starting Build for $APP_NAME ---"
+echo "--- Starting Robust Build for $APP_NAME ---"
 
-# 1. Install Python dependencies
-echo "Checking dependencies..."
-pip install pyinstaller pandas numpy h5py matplotlib PyQt5 click
+# 1. Clean previous attempts
+rm -rf build/ dist/
 
-# 2. Build the standalone executable
-echo "Building executable with PyInstaller..."
-pyinstaller --noconsole --onefile \
-            --add-data "$LOGO_NAME:." \
-            --name "$APP_NAME" main.py
+# 2. Run PyInstaller using the SPEC file
+# This is much more reliable than passing flags via CLI
+echo "Building executable via SAAS.spec..."
+pyinstaller --clean SAAS.spec
 
-# 3. Create the .desktop file dynamically based on current paths
-echo "Generating Linux Desktop Entry..."
+# 3. Create/Update the .desktop file
+echo "Updating Linux Desktop Entry..."
 cat <<EOF > $APP_NAME.desktop
 [Desktop Entry]
 Type=Application
@@ -30,11 +27,9 @@ Categories=Science;Education;
 StartupWMClass=$APP_NAME
 EOF
 
-# 4. Finalize
 chmod +x $APP_NAME.desktop
+
 echo "------------------------------------------------"
 echo "Build Complete!"
-echo "1. The standalone executable is in: $(pwd)/dist/"
-echo "2. To install the app to your Linux menu, run:"
-echo "   cp $APP_NAME.desktop ~/.local/share/applications/"
-echo "------------------------------------------------"
+echo "To test: ./dist/SAAS"
+echo "To install menu icon: cp $APP_NAME.desktop ~/.local/share/applications/"
