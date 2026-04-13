@@ -1,0 +1,168 @@
+
+\documentclass[11pt,a4paper]{article}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% --- Margins ---
+\geometry{margin=1in}
+
+% --- Formatting ---
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    pdftitle={SAAS User Manual},
+}
+
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codeblue}{rgb}{0.1,0.1,0.8}
+\lstset{
+    backgroundcolor=\color{gray!10},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{codegray},
+    keywordstyle=\color{codeblue},
+}
+
+% --- Title ---
+\title{Software for the Analysis of Atomic Spectra (SAAS) \\ \Large User Manual}
+\author{Gillian Nave, Jacob Ward}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+The Software for the Analysis of Atomic Spectra (SAAS) is a unified suite designed for experimental atomic physics. It replaces a diverse set of legacy scripts (notably \texttt{pybranch.py}) with a modern, modular application written in Python 3.
+
+SAAS provides a structured environment for managing spectroscopic data, identifying spectral lines, and calculating fundmental atomic properties such as **Branching Fractions (BFs)** and **Transition Probabilities (Einstein A-coefficients)**.
+
+\section{Core Architecture}
+\subsection{HDF5 Project Management}
+Unlike legacy workflows that rely on scattered ASCII files, SAAS utilizes a single **HDF5 (.h5)** project file. This format acts as a container for:
+\begin{itemize}
+    \item Raw and calibrated spectra (NSO and FITS formats).
+    \item Experimental linelists (.lin and .txt).
+    \item Master energy level tables and theoretical calculations.
+    \item Versioned analysis results and metadata.
+\end{itemize}
+
+\subsection{The Main Interface}
+The main window consists of an **HDF5 Tree Browser** on the left and a **Data Preview/Metadata Pane** on the right.
+\begin{description}
+    \item[Tree Selection:] Click any item to see a quick preview (first 200 rows) or a spectral plot.
+    \item[Metadata View:] The second tab displays all HDF5 attributes associated with the selected object.
+    \item[Full Table Viewer:] Right-click any dataset in the tree and select \textbf{Full Table}. This opens a searchable, filterable window containing the entire dataset, essential for navigating large experimental linelists.
+\end{description}
+
+\section{Installation and Build}
+\subsection{System Requirements}
+SAAS is designed for Linux environments (GNOME/Wayland). It requires:
+\begin{itemize}
+    \item Python 3.8 or higher.
+    \item Dependencies: \texttt{pandas, numpy, h5py, matplotlib, PyQt5, click, astropy}.
+\end{itemize}
+
+\subsection{Building the Executable}
+A build script \texttt{build.sh} is provided to create a standalone binary:
+\begin{lstlisting}[language=bash]
+chmod +x build.sh
+./build.sh
+\end{lstlisting}
+This packages the code and libraries into a single file in the \texttt{dist/} directory and generates a Linux \texttt{.desktop} file for menu integration.
+
+\section{Data Import}
+SAAS provides dedicated wizards to ensure data integrity and schema compliance.
+
+\subsection{Spectra and Linelists}
+\begin{itemize}
+    \item \textbf{Main Spectrum:} Imports .raw/.dat files with their .hdr headers.
+    \item \textbf{Calibration Spectrum:} Associates a standard lamp spectrum with an existing main spectrum to facilitate intensity calibration.
+    \item \textbf{Binary Linelists:} Directly parses Xgremlin \texttt{.lin} files, automatically applying damping parameter transformations.
+\end{itemize}
+
+\subsection{Generic Table Wizard}
+For Energy Levels and Previous Identifications, the **Import Wizard** allows users to:
+\begin{enumerate}
+    \item Preview ASCII/CSV files.
+    \item Assign columns to specific fields (e.g., mapping a column to \texttt{lifetime\_unc\_frac}).
+    \item Store source metadata (author, date, notes) directly in the project file.
+\end{enumerate}
+
+\section{Interactive Branching Fraction Analysis}
+The analysis module (accessible via \texttt{Ctrl+R}) is the heart of SAAS.
+
+\subsection{The Analysis Workflow}
+\begin{enumerate}
+    \item \textbf{Level Selection:} Choose a master levels file and select an upper level of interest. SAAS filters the Previous Identifications list to show transitions originating from that level.
+    \item \textbf{Data Selection:} Select the experimental linelists for comparison. \textit{Note: Checking a linelist automatically enables its corresponding raw spectrum for plotting.}
+    \item \textbf{Normalization:} Select a strong line observed in most spectra. Right-click and select \textbf{Normalize to Reference} to set its intensity to 1000 and rescale all other lines.
+    \item \textbf{Transfer Calibration:} If a spectrum lacks the primary reference line, right-click a common ``Transfer Line'' to bridge the intensity scales between spectra.
+\end{enumerate}
+
+\subsection{Outlier Highlighting}
+SAAS performs real-time outlier detection. If an individual intensity measurement deviates by more than \textbf{3-sigma} from the weighted mean, the cell is highlighted in **light red**. Sigma is calculated as the root-sum-of-squares of the absolute individual uncertainty and the mean uncertainty.
+
+\section{Physical Calculations}
+\subsection{Uncertainty Model}
+SAAS implements the model established by Sikström et al. (2002). The total absolute uncertainty of an individual measurement is derived from:
+\begin{enumerate}
+    \item \textbf{Statistical Uncertainty ($U_{stat}$):} 
+    \begin{equation}
+        U_{stat} = \frac{1.5}{SNR \cdot \sqrt{n}}
+    \end{equation}
+    where $n = \text{FWHM} / \text{resolution}$.
+    \item \textbf{Calibration Uncertainty ($Unc_{cal}$):} This term accounts for the increasing error as one moves away from the spectrum's strongest calibrated line ($\sigma_{maxI}$):
+    \begin{equation}
+        Unc_{cal} = \text{CalUncPer1000} \cdot \frac{|\sigma - \sigma_{maxI}|}{1000}
+    \end{equation}
+\end{enumerate}
+
+\subsection{Weighted Mean and Constraints}
+Lines are weighted by $1/Unc_{total}^2$. To prevent strong lines from disproportionately biasing the results, uncertainties are clipped to a minimum of 6\% (a weight cap of 555).
+
+\subsection{Residual Estimation}
+Unobserved decay channels are accounted for by a ``residual'' fraction calculated from theoretical transition probabilities ($A_{theo}$):
+\begin{equation}
+    \text{Fraction}_{\text{resid}} = \frac{\sum A_{\text{unobserved}} \cdot \tau_{\text{lifetime}}}{1000}
+\end{equation}
+A default uncertainty of 50\% is assigned to the residual.
+
+\section{Reporting and Export}
+\subsection{The Rule of 20}
+To maintain scientific rigor, results are rounded according to the metrological **Rule of 20**:
+\begin{itemize}
+    \item If the first significant digit of the absolute uncertainty is \textbf{1}, the value is rounded to two significant digits of the uncertainty.
+    \item If the first significant digit is \textbf{2 or greater}, the value is rounded to one significant digit of the uncertainty.
+\end{itemize}
+
+\subsection{Export Formats}
+\begin{description}
+    \item[LaTeX:] Generates a \texttt{tabular} environment with all percentage signs and special characters properly escaped for direct insertion into papers.
+    \item[MRT (Machine Readable Table):] Exports using the \texttt{astropy.io.ascii.mrt} library. This format is the standard for AAS journals (ApJ, AJ). SAAS provides both **Truncated** (matching the UI) and **Raw** (full precision) MRT export options.
+\end{description}
+
+\section{Troubleshooting}
+\begin{itemize}
+    \item \textbf{Visual Artifacts:} If random colored patterns appear on Linux, SAAS automatically forces the \texttt{xcb} (X11) backend and software rendering (\texttt{LIBGL\_ALWAYS\_SOFTWARE=1}) to ensure stability on Wayland.
+    \item \textbf{File Access:} If HDF5 files on network drives show locking errors, run: \\ \texttt{export HDF5\_USE\_FILE\_LOCKING=FALSE} in your shell.
+\end{itemize}
+
+\end{document}
