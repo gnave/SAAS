@@ -315,6 +315,14 @@ class ResultsDisplayDialog(QDialog):
                 # Clean headers for MRT (No spaces or special chars allowed in MRT column names)
                 clean_headers = [h.replace(" ", "_").replace("(", "").replace(")", "").replace("^", "").replace("-", "_").replace(".", "") for h in headers]
                 table = Table(rows=rows, names=clean_headers)
+                print(table)
+                # Add units if possible (Example)
+                if "wavenumber" in table.colnames:
+                    table["wavenumber"].unit = "cm^-1"
+                if "Branching_Fraction" in table.colnames:
+                    table["Branching_Fraction"].unit = "unitless"
+                if "Trans_Prob_106_s_1" in table.colnames:
+                    table["Trans_Prob_106_s_1"].unit = "10^6 s^-1"
             else:
                 # Use the raw Pandas DataFrame data
                 # MRT requires specific table structures; converting from Pandas is the most robust way
@@ -949,13 +957,15 @@ class AnalysisWindow(QMainWindow):
             self._clear_plot()
     
     def _clear_plot_layout(self):
-        """Safely removes and deletes ALL current plot widgets and spacers."""
+        """Safely removes widgets and prevents memory leaks by closing figures."""
         while self.plot_layout.count() > 0:
             item = self.plot_layout.takeAt(0)
             widget = item.widget()
             if widget:
+                # If the widget is a FigureCanvas, close its figure to free memory
+                if hasattr(widget, 'figure'):
+                    plt.close(widget.figure) 
                 widget.deleteLater()
-            # This handles removing the "stretch" items too
 
     def _update_plot(self, target_wn, paths, ld=None):
         """Creates independent canvases with flexible sizing for overlaid plots."""
@@ -1140,9 +1150,10 @@ class AnalysisWindow(QMainWindow):
                         self.level_table.selectRow(r)
                         self.current_upper_level_key = k
                         break
+                source_str = str(a.get('source_linelists','[]'))
                 try:
-                    checked = ast.literal_eval(str(a.get('source_linelists', '[]')))
-                except:
+                    checked = ast.literal_eval(source_str)
+                except (ValueError, SyntaxError):
                     checked = []
                 for r in range(self.data_source_table.rowCount()):
                     for c in range(self.data_source_table.columnCount()):

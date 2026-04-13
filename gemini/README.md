@@ -7,6 +7,7 @@ Directory 'data' contains test data files for the program. The file 'test.h5' co
 ## Prerequisites
 * **Python 3.8+**
 * **Pip** (Python package manager)
+* xwayland (Linux)
 
 ## Building the Program
 If you have the source code and want to build the standalone executable:
@@ -16,3 +17,5 @@ If you have the source code and want to build the standalone executable:
    ```bash
    chmod +x build.sh
    ./build.sh
+
+

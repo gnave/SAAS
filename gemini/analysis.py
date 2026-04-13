@@ -26,6 +26,8 @@ def get_spectrum_header_params(h5_filepath: str, spectrum_name: str):
                 if bandhi <= bandlo: bandhi = bandlo + 30000.0
     except Exception:
         pass
+    if bandhi <= bandlo:
+        bandhi = bandlo + 1.0
     return resolutn, bandlo, bandhi
 
 def aggregate_observed_data_for_display(h5_filepath: str,

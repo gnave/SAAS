@@ -41,7 +41,17 @@ def add_dataset_to_file(h5_filepath, group_path, dataset_name, data, metadata={}
 def add_pandas_table(h5_filepath, group_path, table_name, df, metadata_dict=None):
     full_key = f"{group_path}/{table_name}"
     min_size = {c: int(df[c].str.len().max() or 0) + 10 for c in df.columns if df[c].dtype == 'object'}
-    df.to_hdf(h5_filepath, key=full_key, mode='a', format='table', index=False, min_itemsize=min_size, data_columns=True)
+    df.to_hdf(
+        h5_filepath, 
+        key=full_key, 
+        mode='a', 
+        format='table', 
+        index=False,
+        min_itemsize=min_itemsize,
+        data_columns=True,
+        complevel=9,      # High compression
+        complib='blosc'   # Fast compression
+    )
     if metadata_dict:
         with h5py.File(h5_filepath, 'a') as f:
             if full_key in f:
