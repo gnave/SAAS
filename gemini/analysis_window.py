@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
     QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader, QApplication,
-    QScrollArea, QFrame, QSizePolicy
+    QScrollArea, QFrame, QFileDialog
 )
 from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel, QRect
 from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush, QPainter 
@@ -24,6 +24,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+from astropy.table import Table
+import astropy.io.ascii as ascii
 
 import h5_manager
 import analysis
@@ -230,43 +232,125 @@ class ResultsTableModel(QAbstractTableModel):
         return super().headerData(section, orientation, role)
 
 class ResultsDisplayDialog(QDialog):
+    """A dialog window to display and export truncated/raw calculation results."""
     def __init__(self, df, parent=None):
         super().__init__(parent)
-        self.df = df
+        self.df = df 
         self.setWindowTitle("Calculation Results")
-        self.setMinimumSize(1000, 500)
+        self.setMinimumSize(1000, 550)
         
         layout = QVBoxLayout(self)
+        
+        # Table View
         self.table_view = QTableView()
-        self.table_view.setModel(ResultsTableModel(df))
+        self.model = ResultsTableModel(df)
+        self.table_view.setModel(self.model)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
+        # Metadata Header
         resid = df.attrs.get('residual_fraction', 0.0) * 100.0
         life = df.attrs.get('lifetime', 0.0)
         header_text = f"<b>Branching Fraction Results</b><br>Lifetime: {life:.3f} ns | Estimated Residual: {resid:.3f} %"
-        
         header_label = QLabel(header_text)
         header_label.setTextFormat(Qt.RichText)
+        
         layout.addWidget(header_label)
         layout.addWidget(self.table_view)
         
-        button_layout = QHBoxLayout()
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.clicked.connect(self._copy_to_clipboard)
-        button_layout.addWidget(copy_btn)
+        # --- Export Buttons Layout ---
+        export_group = QWidget()
+        export_layout = QHBoxLayout(export_group)
         
+        copy_btn = QPushButton("Copy Truncated (Clipboard)")
+        copy_btn.clicked.connect(self._copy_truncated_to_clipboard)
+        
+        latex_btn = QPushButton("LaTeX Table")
+        latex_btn.clicked.connect(self._export_to_latex)
+        
+        mrt_trunc_btn = QPushButton("Save MRT (Truncated)")
+        mrt_trunc_btn.setToolTip("Saves a Machine Readable Table using truncated strings")
+        mrt_trunc_btn.clicked.connect(lambda: self._export_mrt(truncated=True))
+        
+        mrt_raw_btn = QPushButton("Save MRT (Raw)")
+        mrt_raw_btn.setToolTip("Saves a Machine Readable Table using raw floating point data")
+        mrt_raw_btn.clicked.connect(lambda: self._export_mrt(truncated=False))
+
         button_box = QDialogButtonBox(QDialogButtonBox.Ok)
         button_box.accepted.connect(self.accept)
-        button_layout.addWidget(button_box)
-        layout.addLayout(button_layout)
+        
+        export_layout.addWidget(copy_btn)
+        export_layout.addWidget(latex_btn)
+        export_layout.addWidget(mrt_trunc_btn)
+        export_layout.addWidget(mrt_raw_btn)
+        export_layout.addStretch()
+        export_layout.addWidget(button_box)
+        
+        layout.addWidget(export_group)
 
-    def _copy_to_clipboard(self):
+    def _get_formatted_data_as_list(self):
+        """Extracts the truncated strings and headers directly from the UI model."""
+        rows = []
+        headers = []
+        for c in range(self.model.columnCount()):
+            headers.append(str(self.model.headerData(c, Qt.Horizontal, Qt.DisplayRole)))
+        
+        for r in range(self.model.rowCount()):
+            row_data = []
+            for c in range(self.model.columnCount()):
+                index = self.model.index(r, c)
+                row_data.append(str(self.model.data(index, Qt.DisplayRole)))
+            rows.append(row_data)
+        return headers, rows
+
+    def _export_mrt(self, truncated=True):
+        """Exports the data to AAS Machine Readable Table (.mrt) format."""
+        path, _ = QFileDialog.getSaveFileName(self, "Save MRT File", "", "MRT Files (*.mrt);;Text Files (*.txt)")
+        if not path:
+            return
+
         try:
-            text = self.df.to_csv(sep='\t', index=False)
-            QApplication.clipboard().setText(text)
-            QMessageBox.information(self, "Success", "Results copied to clipboard!")
+            if truncated:
+                # Use the truncated strings from the UI
+                headers, rows = self._get_formatted_data_as_list()
+                # Clean headers for MRT (No spaces or special chars allowed in MRT column names)
+                clean_headers = [h.replace(" ", "_").replace("(", "").replace(")", "").replace("^", "").replace("-", "_").replace(".", "") for h in headers]
+                table = Table(rows=rows, names=clean_headers)
+            else:
+                # Use the raw Pandas DataFrame data
+                # MRT requires specific table structures; converting from Pandas is the most robust way
+                table = Table.from_pandas(self.df)
+                # Ensure headers are MRT-compliant
+                table.rename_columns(table.colnames, [c.replace(" ", "_").replace("(", "").replace(")", "").replace("^", "").replace("-", "_").replace(".", "") for c in table.colnames])
+
+            # Write using the specialized AAS format
+            ascii.write(table, path, format='mrt', overwrite=True)
+            QMessageBox.information(self, "Success", f"MRT file saved successfully to:\n{path}")
+            
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to copy: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to create MRT file:\n{e}")
+
+    def _copy_truncated_to_clipboard(self):
+        headers, rows = self._get_formatted_data_as_list()
+        lines = ["\t".join(headers)]
+        for r in rows:
+            lines.append("\t".join(r))
+        QApplication.clipboard().setText("\n".join(lines))
+        QMessageBox.information(self, "Success", "Truncated table copied to clipboard.")
+
+    def _export_to_latex(self):
+        headers, rows = self._get_formatted_data_as_list()
+        safe_headers = [h.replace('%', r'\%').replace('^', r'\^').replace('_', r'\_') for h in headers]
+        col_def = "l" * len(safe_headers)
+        latex = [r"\begin{table}[h]", r"\centering", r"\begin{tabular}{" + col_def + "}", r"\hline", " & ".join(safe_headers) + r" \\", r"\hline"]
+        for r in rows:
+            latex.append(" & ".join(r) + r" \\")
+        latex.append(r"\hline"); latex.append(r"\end{tabular}"); latex.append(r"\caption{Results}"); latex.append(r"\end{table}")
+        
+        dialog = QDialog(self); dialog.setWindowTitle("LaTeX Export"); dialog.setMinimumSize(600, 400)
+        d_layout = QVBoxLayout(dialog); text_edit = QTextEdit(); text_edit.setPlainText("\n".join(latex))
+        d_layout.addWidget(QLabel("Copy the LaTeX code:")); d_layout.addWidget(text_edit)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok); bb.accepted.connect(dialog.accept); d_layout.addWidget(bb)
+        dialog.exec_()
 
 # =============================================================================
 # UI COMPONENTS (HEADERS / DETAILS)

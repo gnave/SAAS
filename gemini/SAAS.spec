@@ -38,6 +38,7 @@ a = Analysis(
         'tables.backends.objectextension',
         'tables.utilsextension',
         'blosc2'
+        'astropy'
     ] + h_tables + h_blosc + h_numexpr,
     hookspath=[],
     hooksconfig={},
