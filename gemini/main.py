@@ -2,19 +2,24 @@
 import sys
 import os
 
-# --- STANDALONE BUNDLE & GRAPHICS FIX ---
+# --- STANDALONE BUNDLE & GRAPHICS STABILITY FIX ---
 if getattr(sys, 'frozen', False):
     bundle_dir = sys._MEIPASS
     os.environ['LD_LIBRARY_PATH'] = bundle_dir + ":" + os.environ.get('LD_LIBRARY_PATH', '')
     if bundle_dir not in sys.path:
         sys.path.insert(0, bundle_dir)
 
-# NEW: Force X11 mode to prevent Wayland colored noise/artifacts
-# This is a standard fix for Matplotlib + PyQt5 apps on modern Linux
+# Force X11 for stability
 os.environ["QT_QPA_PLATFORM"] = "xcb"
-# Disable buggy hardware acceleration that causes the "colored pattern"
+
+# Completely disable hardware acceleration 
+# (This prevents the random patterns in the main window and tree)
 os.environ["QT_XCB_GL_INTEGRATION"] = "none"
-# -----------------------------------------
+os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+
+# Disable the specific X11 feature that causes ghosting
+os.environ["QT_X11_NO_MITSHM"] = "1"
+# --------------------------------------------------
 
 import click
 import h5_manager

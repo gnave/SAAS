@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView, QSizePolicy, QHeaderView, QMenuBar, QAction, QMessageBox,
     QDialog, QDialogButtonBox, QInputDialog, QFormLayout, QTextEdit, QCheckBox,
     QTableWidget, QTableWidgetItem, QMenu, QStyle, QStyleOptionHeader, QApplication,
-    QScrollArea, QFrame
+    QScrollArea, QFrame, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QModelIndex, QAbstractTableModel, pyqtSignal, QItemSelectionModel, QRect
 from PyQt5.QtGui import QColor, QFont, QStandardItemModel, QStandardItem, QIcon, QDoubleValidator, QBrush, QPainter 
@@ -506,33 +506,33 @@ class AnalysisWindow(QMainWindow):
         bl.addWidget(self.run_analysis_btn); bl.addWidget(self.save_results_btn); bl.addWidget(self.copy_table_btn); bl.addStretch(); tl.addLayout(bl)
         self.line_data_table = QTableView(); self.line_data_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.line_data_table.setSelectionMode(QAbstractItemView.SingleSelection); self.custom_header = MultiLevelHeaderView(Qt.Horizontal, self.line_data_table); self.line_data_table.setHorizontalHeader(self.custom_header); self.line_data_table.setAlternatingRowColors(True); self.line_data_table.clicked.connect(self._on_line_selected); self.line_data_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.line_data_table.setContextMenuPolicy(Qt.CustomContextMenu); self.line_data_table.customContextMenuRequested.connect(self._show_line_table_context_menu); tl.addWidget(self.line_data_table); self.central_splitter.addWidget(tc)
         
-        # --- Fixed Plot Section ---
-        plot_container = QWidget()
-        pcl = QVBoxLayout(plot_container)
+        # --- Multi-Canvas Plot Section ---
+        self.plot_container = QWidget()
+        pcl = QVBoxLayout(self.plot_container)
         pcl.setContentsMargins(0, 0, 0, 0)
         pcl.setSpacing(0)
 
-        self.figure = Figure(figsize=(5, 4), dpi=100)
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        pcl.addWidget(self.toolbar)
+        # We no longer create one global self.canvas here.
+        # Instead, we create a container and a layout to hold multiple canvases.
+        self.scroll_content = QWidget()
+        self.scroll_content.setStyleSheet("background-color: white;")
+        self.plot_layout = QHBoxLayout(self.scroll_content) # Horizontal layout
+        self.plot_layout.setContentsMargins(5, 5, 5, 5)
+        self.plot_layout.setSpacing(10)
+        self.plot_layout.addStretch() # Keeps plots to the left
 
         self.plot_scroll_area = QScrollArea()
-        # This is critical: Don't let the scroll area force the widget to be small
-        self.plot_scroll_area.setWidgetResizable(True) 
+        self.plot_scroll_area.setWidgetResizable(True)
         self.plot_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.plot_scroll_area.setWidget(self.scroll_content)
+#        self.plot_scroll_area.setStyleSheet("background-color: #E0E0E0;") # Grey background for empty space
         
-        self.plot_scroll_area.setStyleSheet("background-color: white;")
-        self.plot_scroll_area.viewport().setStyleSheet("background-color: white;")
-        self.plot_scroll_area.viewport().setAutoFillBackground(True)
+        # Note: NavigationToolbar needs a canvas. We will handle the 
+        # toolbar differently or hide it, as it doesn't work well with 
+        # multiple independent canvases.
         
-        # Ensure the canvas itself is also opaque
-        self.canvas.setStyleSheet("background-color: white;")
-        self.canvas.setAutoFillBackground(True)      
-        self.plot_scroll_area.setWidget(self.canvas)
         pcl.addWidget(self.plot_scroll_area)
-        
-        self.central_splitter.addWidget(plot_container)
+        self.central_splitter.addWidget(self.plot_container)
         return self.central_splitter
     
     def _normalize_intensities(self, row):
@@ -739,11 +739,12 @@ class AnalysisWindow(QMainWindow):
             QMessageBox.critical(self, "Error", str(e))
 
     def _refresh_table_view(self, restore_row=None):
+        # Allow the UI to clear any pending "hidden" paint events
+        QApplication.processEvents() 
         self.highlight_df = self.analysis_module.calculate_outliers(self.master_line_data_df, self.h5_filepath)
         model = LineDataTableModel(self.master_line_data_df, self.highlight_df)
         self.line_data_table.setModel(model)
-        self._format_table_columns()
-        
+        self._format_table_columns()      
         if restore_row is not None:
             idx = model.index(restore_row, 0)
             if idx.isValid():
@@ -845,10 +846,9 @@ class AnalysisWindow(QMainWindow):
     # --- PLOTTING ---
 
     def _on_line_selected(self, idx):
-        """Triggers the plot update when a line is clicked in the main table."""
-        if not idx.isValid():
-            return
-        if self.master_line_data_df.empty:
+        """Handles line selection and triggers the multi-canvas plotter."""
+        if not idx.isValid() or self.master_line_data_df.empty:
+            self._clear_plot()
             return
             
         line_data = self.master_line_data_df.iloc[idx.row()]
@@ -857,94 +857,114 @@ class AnalysisWindow(QMainWindow):
         if wavenumber is not None:
             try:
                 wavenumber_float = float(wavenumber)
+                # This now builds the grid of canvases
                 self._update_plot(wavenumber_float, self._get_checked_data_paths(), line_data)
             except (ValueError, TypeError):
                 self._clear_plot()
         else:
             self._clear_plot()
+    
+    def _clear_plot_layout(self):
+        """Safely removes and deletes ALL current plot widgets and spacers."""
+        while self.plot_layout.count() > 0:
+            item = self.plot_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            # This handles removing the "stretch" items too
 
     def _update_plot(self, target_wn, paths, ld=None):
-        """Plots spectra and forces Qt to show scrollbars for wide layouts."""
-        self.figure.clear()
-        self.figure.patch.set_facecolor('white') 
-        self.figure.patch.set_alpha(1.0)
-
-        cc = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        """Creates independent canvases with flexible sizing for overlaid plots."""
+        self._clear_plot_layout()
         
         raw_ps = [p for p in paths if 'Raw_Data' in p]
         linelist_paths = [p for p in paths if 'Calibrated' in p or 'Identified' in p]
         
-        # 1. Get width from linelist
+        # Determine Range
         max_fwhm = 0.0
-        tol = float(self.tolerance_edit.text() or 0.1)
+        tolerance = float(self.tolerance_edit.text() or 0.1)
         for p in linelist_paths:
             try:
                 df = h5_manager.read_hdf_table_robustly(self.h5_filepath, p)
-                if 'wavenumber' in df.columns and 'width' in df.columns:
-                    df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
-                    d = np.abs(df['w'] - target_wn)
-                    if d.min() <= tol:
-                        max_fwhm = max(max_fwhm, df.loc[d.idxmin(), 'width'])
+                df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
+                d = np.abs(df['w'] - target_wn)
+                if d.min() <= tolerance:
+                    max_fwhm = max(max_fwhm, df.loc[d.idxmin(), 'width'])
             except Exception: pass
-        
         rng = (5.0 * (max_fwhm / 1000.0)) if max_fwhm > 0 else 2.0
-        
-        # 2. Handle Sizing
-        num_raw = len(raw_ps)
+
         use_separate = self.separate_plots_checkbox.isChecked()
-        
-        # Define minimum width in pixels per plot
-        PX_PER_PLOT = 450 
+        color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-        if use_separate and num_raw > 1:
-            total_px_width = num_raw * PX_PER_PLOT
-            # Force the internal Matplotlib size
-            self.figure.set_size_inches(total_px_width / 100.0, 4.0)
-            # Force the external Qt Widget size (This triggers the scrollbar!)
-            self.canvas.setMinimumWidth(total_px_width)
-            axes = [self.figure.add_subplot(1, num_raw, i+1) for i in range(num_raw)]
-        else:
-            # Revert to standard behavior (fit to window)
-            self.canvas.setMinimumWidth(0) 
-            self.figure.set_size_inches(8.0, 4.0)
-            axes = [self.figure.add_subplot(1, 1, 1)]
+        # Determine grouping
+        # If overlaid, we have 1 group containing all paths.
+        # If separate, we have many groups, each containing 1 path.
+        paths_to_process = raw_ps if use_separate else [raw_ps]
 
-        data_loaded = False
-        # 3. Plotting Loop
-        for i, p in enumerate(raw_ps):
-            try:
-                ax = axes[i] if use_separate else axes[0]
-                sn = p.split('/')[2]
-                ex = bool(ld is not None and ld.get(f"{sn}\nExcluded", False))
-                
-                with h5py.File(self.h5_filepath, 'r') as f:
-                    ds = f[p]; a = ds.attrs
-                    y = ds[:] * a.get('rdsclfct', 1.0)
-                    x = (a.get('wstart', 0.0) + np.arange(len(y)) * a.get('delw', 1.0)) * (1.0 + a.get('wavcorr', 0.0))
-                    m = (x >= target_wn - rng) & (x <= target_wn + rng)
+        for i, p_group in enumerate(paths_to_process):
+            # Create a dedicated canvas
+            fig = Figure(figsize=(5, 4), dpi=100)
+            canvas = FigureCanvas(fig)
+            
+            # --- NEW SIZING LOGIC ---
+            if not use_separate:
+                # OVERLAID: Make it stretch to fill the whole window
+                canvas.setMinimumSize(800, 300) # At least 800px wide
+                canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.plot_layout.addWidget(canvas)
+            else:
+                # SEPARATE: Fixed width tiles for horizontal scrolling
+                canvas.setFixedSize(450, 400)
+                self.plot_layout.addWidget(canvas)
+            # ------------------------
+            
+            ax = fig.add_subplot(111)
+            current_group = p_group if isinstance(p_group, list) else [p_group]
+            
+            loaded_any = False
+            for j, p in enumerate(current_group):
+                try:
+                    sn = p.split('/')[2]
+                    ex = bool(ld is not None and ld.get(f"{sn}\nExcluded", False))
                     
-                    if np.any(m):
-                        c = 'lightgray' if ex else cc[i % len(cc)]
-                        ax.plot(x[m], y[m], color=c, alpha=0.7, label=sn + (" (Excl)" if ex else ""))
-                        ax.axvline(target_wn, color='red', linestyle='--', alpha=0.3)
-                        ax.grid(True)
-                        ax.legend(loc='upper right', fontsize='x-small')
-                        data_loaded = True
-            except Exception: pass
+                    with h5py.File(self.h5_filepath, 'r') as f:
+                        ds = f[p]; a = ds.attrs
+                        y = ds[:] * a.get('rdsclfct', 1.0)
+                        x = (a.get('wstart', 0.0) + np.arange(len(y)) * a.get('delw', 1.0)) * (1.0 + a.get('wavcorr', 0.0))
+                        mask = (x >= target_wn - rng) & (x <= target_wn + rng)
+                        
+                        if np.any(mask):
+                            c = 'lightgray' if ex else color_cycle[(i+j) % len(color_cycle)]
+                            ax.plot(x[mask], y[mask], color=c, alpha=0.8, label=sn)
+                            loaded_any = True
+                except Exception: pass
+            
+            if loaded_any:
+                ax.axvline(target_wn, color='red', linestyle='--', alpha=0.3)
+                ax.set_title("Overlaid Spectra" if not use_separate else current_group[0].split('/')[2])
+                ax.legend(loc='upper right', fontsize='x-small')
+                ax.grid(True)
+                fig.tight_layout()
+                canvas.draw()
+            else:
+                ax.text(0.5, 0.5, "No Data", ha='center', va='center')
+                canvas.draw()
 
-        if data_loaded:
-            self.figure.supxlabel(r'Wavenumber (cm$^{-1}$)')
-            self.figure.supylabel('Intensity')
-            self.figure.tight_layout()
-            self.canvas.draw()
-        else:
-            ax = self.figure.add_subplot(1,1,1)
-            ax.text(0.5, 0.5, "No Data", ha='center', va='center')
-            self.canvas.draw()
-
+        # If we are in separate mode, add a stretch at the end to keep plots left-aligned
+        if use_separate:
+            self.plot_layout.addStretch()
+    
     def _clear_plot(self):
-        self.figure.clear()
-        self.canvas.draw()
+        """Clears all plot canvases and shows a placeholder message."""
+        self._clear_plot_layout()
+        
+        # Create a placeholder label to tell the user what to do
+        placeholder = QLabel("Select an upper level and a line to view spectra")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("color: gray; font-size: 14px; background-color: white;")
+        
+        # Add the placeholder to the layout (before the stretch)
+        self.plot_layout.insertWidget(0, placeholder)
 
     # --- CALCULATION & SAVE ---
 

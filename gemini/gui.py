@@ -390,6 +390,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         QApplication.setDesktopFileName("SAAS")
+
+        # NEW: Force the window to handle its own background clearing strictly
+        # FORCED: Disable any transparency logic that causes noise
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, False)
+        self.setStyleSheet("background-color: #F0F0F0;") # Light grey standard
+
         self.setWindowTitle("SAAS - Spectroscopy Data Manager")
         self.setMinimumSize(1000, 800)
         self.setWindowIcon(QIcon(resource_path('SAAS_logo.png')))
