@@ -41,21 +41,29 @@ def add_dataset_to_file(h5_filepath, group_path, dataset_name, data, metadata={}
 def add_pandas_table(h5_filepath, group_path, table_name, df, metadata_dict=None):
     full_key = f"{group_path}/{table_name}"
     
-    # FIX: Ensure the variable name matches the one used in the function call below
+    # Calculate min itemsize for string columns
     min_itemsize = {c: int(df[c].str.len().max() or 0) + 10 for c in df.columns if df[c].dtype == 'object'}
     
-    # Use 'complevel' to add compression—HDF5 files can get huge otherwise!
+    # FIX: Use 'zlib' instead of 'blosc'. 
+    # zlib is natively supported by HDF5 and does not require external plugins.
     df.to_hdf(
         h5_filepath, 
         key=full_key, 
         mode='a', 
         format='table', 
         index=False, 
-        min_itemsize=min_itemsize, # This now correctly references the variable above
+        min_itemsize=min_itemsize,
         data_columns=True,
-        complevel=9,      
-        complib='blosc'   
+        complevel=9,      # High compression ratio
+        complib='zlib'    # UNIVERSAL COMPRESSION
     )
+    
+    if metadata_dict:
+        with h5py.File(h5_filepath, 'a') as f:
+            if full_key in f:
+                for k, v in metadata_dict.items(): 
+                    f[full_key].attrs[k] = str(v)
+    
     
     if metadata_dict:
         with h5py.File(h5_filepath, 'a') as f:

@@ -1,6 +1,5 @@
-# main.py (COMPLETE)
-import sys
 import os
+import sys
 
 # --- STANDALONE BUNDLE & GRAPHICS STABILITY FIX ---
 if getattr(sys, 'frozen', False):
@@ -9,16 +8,19 @@ if getattr(sys, 'frozen', False):
     if bundle_dir not in sys.path:
         sys.path.insert(0, bundle_dir)
 
-# Force X11 for stability
+# 1. Graphics Stability
 os.environ["QT_QPA_PLATFORM"] = "xcb"
-
-# Completely disable hardware acceleration 
-# (This prevents the random patterns in the main window and tree)
+os.environ["QT_X11_NO_MITSHM"] = "1"
 os.environ["QT_XCB_GL_INTEGRATION"] = "none"
 os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
 
-# Disable the specific X11 feature that causes ghosting
-os.environ["QT_X11_NO_MITSHM"] = "1"
+# 2. HDF5 Plugin Path Fix (Prevents the "can't open directory" error)
+if 'CONDA_PREFIX' in os.environ:
+    plugin_path = os.path.join(os.environ['CONDA_PREFIX'], 'lib', 'hdf5', 'plugin')
+    os.environ["HDF5_PLUGIN_PATH"] = plugin_path
+
+# 3. Suppress the Wayland Warning on GNOME
+os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland.debug=false;qt.qpa.xcb.debug=false"
 # --------------------------------------------------
 
 import click
