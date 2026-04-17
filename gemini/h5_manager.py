@@ -40,34 +40,51 @@ def add_dataset_to_file(h5_filepath, group_path, dataset_name, data, metadata={}
 
 def add_pandas_table(h5_filepath, group_path, table_name, df, metadata_dict=None):
     full_key = f"{group_path}/{table_name}"
-    min_size = {c: int(df[c].str.len().max() or 0) + 10 for c in df.columns if df[c].dtype == 'object'}
+    
+    # FIX: Ensure the variable name matches the one used in the function call below
+    min_itemsize = {c: int(df[c].str.len().max() or 0) + 10 for c in df.columns if df[c].dtype == 'object'}
+    
+    # Use 'complevel' to add compression—HDF5 files can get huge otherwise!
     df.to_hdf(
         h5_filepath, 
         key=full_key, 
         mode='a', 
         format='table', 
-        index=False,
-        min_itemsize=min_itemsize,
+        index=False, 
+        min_itemsize=min_itemsize, # This now correctly references the variable above
         data_columns=True,
-        complevel=9,      # High compression
-        complib='blosc'   # Fast compression
+        complevel=9,      
+        complib='blosc'   
     )
+    
     if metadata_dict:
         with h5py.File(h5_filepath, 'a') as f:
             if full_key in f:
-                for k, v in metadata_dict.items(): f[full_key].attrs[k] = str(v)
+                for k, v in metadata_dict.items(): 
+                    f[full_key].attrs[k] = str(v)
 
 def attach_metadata_to_group(h5_filepath, group_path, metadata_dict):
     with h5py.File(h5_filepath, 'a') as f:
         if group_path in f:
             for k, v in metadata_dict.items(): f[group_path].attrs[k] = str(v)
 
-def delete_object(h5_filepath, h5_path):
+def delete_object(h5_filepath: str, h5_path: str) -> bool:
+    """
+    Deletes an object (Dataset or Group/Folder) from the HDF5 file.
+    """
     try:
+        # Use 'a' mode for read/write access
         with h5py.File(h5_filepath, 'a') as f:
-            if h5_path in f: del f[h5_path]; return True
-    except Exception: return False
-    return False
+            if h5_path in f:
+                # In h5py, 'del' works for both datasets and entire groups
+                del f[h5_path]
+                return True
+            else:
+                print(f"Warning: Path {h5_path} not found in file.")
+                return False
+    except Exception as e:
+        print(f"Error during HDF5 deletion: {e}")
+        return False
     
 def read_hdf_table_robustly(h5_filepath, h5_dataset_path):
     with h5py.File(h5_filepath, 'r') as f:

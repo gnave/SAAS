@@ -245,6 +245,13 @@ class ImportLinelistDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         l.addRow(bb)
+
+    def _browse(self):
+        # Added ;;All Files (*) to the filter
+        f, _ = QFileDialog.getOpenFileName(self, "Select File", "", "Linelist Files (*.lin);;All Files (*)")
+        if f: 
+            self.f_edit.setText(f)
+
     def accept(self):
         try:
             importers.import_binary_linelist(self.h5_filepath, self.f_edit.text(), f"/Spectra/{self.combo.currentText()}")
@@ -264,7 +271,7 @@ class ImportCalibratedLinelistDialog(QDialog):
             if '/Spectra' in f:
                 self.combo.addItems(list(f['/Spectra'].keys()))
         fb = QPushButton("Browse...")
-        fb.clicked.connect(lambda: self.f_edit.setText(QFileDialog.getOpenFileName(self, "Select File", "", "Text Files (*.txt)")[0]))
+        fb.clicked.connect(lambda: self.f_edit.setText(QFileDialog.getOpenFileName(self, "Select File", "", "Text Files (*.txt);;All Files (*)")[0]))
         l.addRow("Target:", self.combo)
         fl = QHBoxLayout()
         fl.addWidget(self.f_edit)
@@ -274,6 +281,12 @@ class ImportCalibratedLinelistDialog(QDialog):
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         l.addRow(bb)
+
+    def _browse(self):
+        # Added ;;All Files (*) to the filter
+        f, _ = QFileDialog.getOpenFileName(self, "Select File", "", "Text Files (*.txt);;All Files (*)")
+        if f: 
+            self.f_edit.setText(f)
     def accept(self):
         try:
             importers.import_calibrated_linelist(self.h5_filepath, self.f_edit.text(), f"/Spectra/{self.combo.currentText()}")
@@ -554,27 +567,73 @@ class MainWindow(QMainWindow):
         self.aw.destroyed.connect(self._populate_tree_view)
 
     def _show_tree_context_menu(self, pos):
+        """Standardized context menu for both Folders (Groups) and Tables (Datasets)."""
         idx = self.tree_view.indexAt(pos)
-        if not idx.isValid(): 
+        if not idx.isValid():
             return
-        path = idx.data(Qt.UserRole)
+            
+        h5_path = idx.data(Qt.UserRole)
+        is_dataset = False
+        
+        # 1. Briefly open to check type, then close immediately 
+        # to prevent locking during the menu execution.
+        try:
+            with h5py.File(self.current_h5_file, 'r') as f:
+                if h5_path in f:
+                    is_dataset = isinstance(f[h5_path], h5py.Dataset)
+        except Exception:
+            return
+
         menu = QMenu()
-        with h5py.File(self.current_h5_file, 'r') as f:
-            full_act = None
-            if isinstance(f[path], h5py.Dataset):
-                full_act = menu.addAction("Full Table")
-            del_act = menu.addAction("Delete")
-            res = menu.exec_(self.tree_view.viewport().mapToGlobal(pos))
-            if res == del_act:
-                self._delete_selected_item(idx)
-            elif full_act and res == full_act:
-                self._open_full_table_viewer(path)
+        
+        # 2. Add 'Full Table' option only for data files
+        full_act = None
+        if is_dataset:
+            full_act = menu.addAction("View Full Table (Searchable)")
+            menu.addSeparator()
+            
+        # 3. Add 'Delete' option for EVERY valid item
+        del_act = menu.addAction("Delete Item")
+        
+        # Show menu
+        res = menu.exec_(self.tree_view.viewport().mapToGlobal(pos))
+        
+        if res == del_act:
+            self._delete_selected_item(idx)
+        elif full_act and res == full_act:
+            self._open_full_table_viewer(h5_path)
+
+    def _delete_selected_item(self, idx):
+        """Handles deletion of datasets or entire spectrum folders."""
+        h5_path = idx.data(Qt.UserRole)
+        
+        # Protection for top-level system folders
+        system_folders = [
+            '/Spectra', '/Levels', '/Calculations', 
+            '/Previous_Identifications', '/Standard_Lamp_Calibrations', 
+            '/Branching_Fraction_Analyses', '/'
+        ]
+        if h5_path in system_folders:
+            QMessageBox.warning(self, "Action Not Allowed", 
+                                "You cannot delete system-level folders. Delete items inside them instead.")
+            return
+
+        # Confirm with user
+        msg = f"Are you sure you want to PERMANENTLY delete:\n\n{h5_path}\n\nThis will delete all data inside this folder."
+        reply = QMessageBox.question(self, "Confirm Deletion", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            success = h5_manager.delete_object(self.current_h5_file, h5_path)
+            if success:
+                # Refresh tree and clear previews
+                self._populate_tree_view()
+                self.data_table.hide()
+                self.attr_view.setRowCount(0)
+            else:
+                QMessageBox.critical(self, "Error", f"Failed to delete {h5_path}. The file might be in use.")
 
     def _open_full_table_viewer(self, path):
         df = h5_manager.read_hdf_table_robustly(self.current_h5_file, path)
         self.fv = FullTableWindow(df, path, self)
         self.fv.show()
 
-    def _delete_selected_item(self, idx):
-        if h5_manager.delete_object(self.current_h5_file, idx.data(Qt.UserRole)):
-            self._populate_tree_view()

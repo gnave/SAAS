@@ -69,41 +69,40 @@ def parse_hdr_file(header_filepath: str):
 
 def import_spectrum_pair(h5_filepath, raw_data_file, header_file, is_calibration_spectrum=False, target_spectrum_group=None):
     """
-    Imports a spectrum data file (.raw, .dat) and its corresponding metadata
-    file (.hdr) into the HDF5 project file.
-
-    This function handles two cases:
-    1. Main Spectrum: Creates a new top-level spectrum group under '/Spectra/'
-       with a standardized subgroup structure (Raw_Data, Linelists, etc.).
-    2. Calibration Spectrum: Adds the spectrum to the 'Calibration_Spectra'
-       subgroup of an existing main spectrum group.
-
-    Args:
-        h5_filepath (str): Path to the HDF5 project file.
-        raw_data_file (str): Path to the binary spectrum data file.
-        header_file (str): Path to the .hdr metadata file.
-        is_calibration_spectrum (bool): If True, treats the spectrum as a
-                                        calibration file associated with a main
-                                        spectrum.
-        target_spectrum_group (str, optional): The HDF5 path to the main spectrum
-                                               group. Required if
-                                               `is_calibration_spectrum` is True.
+    Imports a spectrum and handles 'Complex' vs 'Real' data formats.
+    If 'data_is' is 'Complex', extracts only every other point (the real parts).
     """
     base_name = os.path.splitext(os.path.basename(raw_data_file))[0]
-    # Sanitize the filename to create a valid HDF5 group name.
     sanitized_name = base_name.replace('.', '_').replace('-', '_')
 
+    # 1. Parse metadata FIRST to check data format
+    metadata_dict = parse_hdr_file(header_file)
+    
+    # 2. Read the binary data
+    spec_data = np.fromfile(raw_data_file, dtype=np.float32)
+
+    # 3. Handle Complex vs Real slicing
+    # 'data_is' might be 'Complex', 'Real', or missing (default to Real)
+    data_format = str(metadata_dict.get('data_is', 'Real')).strip()
+    
+    if 'Complex' in data_format:
+        # Extract every other point starting from 0 (Real parts)
+        # Slicing syntax [start:stop:step]
+        spec_data = spec_data[::2]
+        print(f"Detected Complex data: Discarded imaginary components. Points remaining: {len(spec_data)}")
+    else:
+        print(f"Detected Real data: Reading all points. Total: {len(spec_data)}")
+
+    # 4. Setup HDF5 paths
     if is_calibration_spectrum:
         if not target_spectrum_group:
             raise ValueError("A target spectrum group must be provided for calibration spectra.")
-        print(f"--- Importing CALIBRATION spectrum into: {target_spectrum_group} ---")
         group_path = f"{target_spectrum_group}/Calibration_Spectra"
         dataset_name = sanitized_name
         with h5py.File(h5_filepath, 'a') as f:
-            if not group_path in f: f.create_group(group_path)
+            if group_path not in f:
+                f.create_group(group_path)
     else:
-        # For a main spectrum, create the full required group hierarchy.
-        print(f"--- Starting import for MAIN spectrum: {raw_data_file} ---")
         spectrum_name = sanitized_name
         base_spectrum_group = f"/Spectra/{spectrum_name}"
         raw_data_group = f"{base_spectrum_group}/Raw_Data"
@@ -120,17 +119,13 @@ def import_spectrum_pair(h5_filepath, raw_data_file, header_file, is_calibration
         group_path = raw_data_group
         dataset_name = 'spectrum'
     
-    # Read the spectrum data as a flat array of 32-bit floats.
-    spec_data = np.fromfile(raw_data_file, dtype=np.float32)
-    # Parse the associated metadata file.
-    metadata_dict = parse_hdr_file(header_file)
+    # 5. Save and finalize
     metadata_dict['original_data_filename'] = os.path.basename(raw_data_file)
     metadata_dict['original_header_filename'] = os.path.basename(header_file)
     
-    # Save the data and metadata to the HDF5 file.
     h5_manager.add_dataset_to_file(h5_filepath, group_path, dataset_name, spec_data, metadata=metadata_dict)
-    print(f"--- Successfully imported spectrum '{sanitized_name}' into '{group_path}' ---")
-
+    print(f"--- Successfully imported {data_format} spectrum '{sanitized_name}' ---")
+    
 def read_linelist(lin_filepath: str):
     """
     Parses a binary .lin linelist file.
