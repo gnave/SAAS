@@ -498,6 +498,8 @@ class AnalysisWindow(QMainWindow):
         
         self.main_splitter.setSizes([350, 1050])
         self.side_panel_splitter.setSizes([self.height() // 2, self.height() // 2])
+        h = self.central_splitter.height()
+        self.central_splitter.setSizes([h // 2, h*2 // 3])
 
     # --- UI CREATION ---
 
@@ -968,70 +970,81 @@ class AnalysisWindow(QMainWindow):
                 widget.deleteLater()
 
     def _update_plot(self, target_wn, paths, ld=None):
-        """Creates independent canvases with flexible sizing for overlaid plots."""
+        """Creates independent canvases and dedicated toolbars for each plot."""
         self._clear_plot_layout()
         
         raw_ps = [p for p in paths if 'Raw_Data' in p]
         linelist_paths = [p for p in paths if 'Calibrated' in p or 'Identified' in p]
         
-        # Determine Range
+        # --- Determine Range ---
         max_fwhm = 0.0
         tolerance = float(self.tolerance_edit.text() or 0.1)
         for p in linelist_paths:
             try:
                 df = h5_manager.read_hdf_table_robustly(self.h5_filepath, p)
-                df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
-                d = np.abs(df['w'] - target_wn)
-                if d.min() <= tolerance:
-                    max_fwhm = max(max_fwhm, df.loc[d.idxmin(), 'width'])
-            except Exception: pass
+                if 'wavenumber' in df.columns and 'width' in df.columns:
+                    df['w'] = pd.to_numeric(df['wavenumber'], errors='coerce')
+                    diffs = np.abs(df['w'] - target_wn)
+                    if diffs.min() <= tolerance:
+                        max_fwhm = max(max_fwhm, df.loc[diffs.idxmin(), 'width'])
+            except Exception:
+                pass
+        
         rng = (5.0 * (max_fwhm / 1000.0)) if max_fwhm > 0 else 2.0
-
         use_separate = self.separate_plots_checkbox.isChecked()
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
-
-        # Determine grouping
-        # If overlaid, we have 1 group containing all paths.
-        # If separate, we have many groups, each containing 1 path.
         paths_to_process = raw_ps if use_separate else [raw_ps]
 
         for i, p_group in enumerate(paths_to_process):
-            # Create a dedicated canvas
+            # 1. Create the Plot objects
             fig = Figure(figsize=(5, 4), dpi=100)
             canvas = FigureCanvas(fig)
             
-            # --- NEW SIZING LOGIC ---
-            if not use_separate:
-                # OVERLAID: Make it stretch to fill the whole window
-                canvas.setMinimumSize(800, 300) # At least 800px wide
-                canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                self.plot_layout.addWidget(canvas)
-            else:
-                # SEPARATE: Fixed width tiles for horizontal scrolling
-                canvas.setFixedSize(450, 400)
-                self.plot_layout.addWidget(canvas)
-            # ------------------------
+            # 2. Create the Toolbar and link it to THIS specific canvas
+            toolbar = NavigationToolbar(canvas, self)
             
+            # 3. Create a "Tile" widget to group the toolbar and canvas together
+            tile_widget = QWidget()
+            tile_layout = QVBoxLayout(tile_widget)
+            tile_layout.setContentsMargins(0, 0, 0, 0)
+            tile_layout.setSpacing(0)
+            tile_layout.addWidget(toolbar)
+            tile_layout.addWidget(canvas)
+            
+            # 4. Sizing logic
+            if not use_separate:
+                tile_widget.setMinimumSize(800, 400)
+                tile_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.plot_layout.addWidget(tile_widget)
+            else:
+                tile_widget.setFixedSize(450, 500) # Slightly taller to accommodate the toolbar
+                self.plot_layout.addWidget(tile_widget)
+            
+            # --- The actual plotting logic remains the same ---
             ax = fig.add_subplot(111)
             current_group = p_group if isinstance(p_group, list) else [p_group]
-            
             loaded_any = False
+            
             for j, p in enumerate(current_group):
                 try:
                     sn = p.split('/')[2]
-                    ex = bool(ld is not None and ld.get(f"{sn}\nExcluded", False))
+                    ex_key = f"{sn}\nExcluded"
+                    is_ex = bool(ld is not None and ld.get(ex_key, False))
                     
                     with h5py.File(self.h5_filepath, 'r') as f:
-                        ds = f[p]; a = ds.attrs
+                        ds = f[p]
+                        a = ds.attrs
                         y = ds[:] * a.get('rdsclfct', 1.0)
-                        x = (a.get('wstart', 0.0) + np.arange(len(y)) * a.get('delw', 1.0)) * (1.0 + a.get('wavcorr', 0.0))
-                        mask = (x >= target_wn - rng) & (x <= target_wn + rng)
+                        x_base = a.get('wstart', 0.0) + np.arange(len(y)) * a.get('delw', 1.0)
+                        x = x_base * (1.0 + a.get('wavcorr', 0.0))
                         
+                        mask = (x >= target_wn - rng) & (x <= target_wn + rng)
                         if np.any(mask):
-                            c = 'lightgray' if ex else color_cycle[(i+j) % len(color_cycle)]
+                            c = 'lightgray' if is_ex else color_cycle[(i + j) % len(color_cycle)]
                             ax.plot(x[mask], y[mask], color=c, alpha=0.8, label=sn)
                             loaded_any = True
-                except Exception: pass
+                except Exception:
+                    pass
             
             if loaded_any:
                 ax.axvline(target_wn, color='red', linestyle='--', alpha=0.3)
@@ -1044,7 +1057,6 @@ class AnalysisWindow(QMainWindow):
                 ax.text(0.5, 0.5, "No Data", ha='center', va='center')
                 canvas.draw()
 
-        # If we are in separate mode, add a stretch at the end to keep plots left-aligned
         if use_separate:
             self.plot_layout.addStretch()
     
